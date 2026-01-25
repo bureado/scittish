@@ -2,6 +2,22 @@
 
 A simple REST API for SCITT signing and submission operations, designed to run in a Docker container. Supports remote attestation on Azure Confidential Container Instances (C-ACI).
 
+## Development
+
+### Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r api/requirements.txt -r requirements-dev.txt
+```
+
+### Running tests
+
+```bash
+pytest
+```
+
 ## Building
 
 ```bash
