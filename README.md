@@ -42,48 +42,61 @@ Returns the certificate chain and SCITT ledger URL.
 
 ### Sign a payload
 
-Sign any file directly using `--data-binary`:
+Signing is asynchronous. Submit a payload and receive a job ID, then poll until complete.
+
+**Step 1: Submit payload**
 
 ```bash
-# Sign a JSON file
 curl -X POST --data-binary '@artifact.json' \
   -H "Content-Type: application/json" \
   -H "X-Scittish-Subject: product:myproduct:v1" \
   http://localhost:8080/sign
-
-# Sign a binary file (SBOM, firmware, etc.)
-curl -X POST --data-binary '@firmware.bin' \
-  -H "Content-Type: application/octet-stream" \
-  http://localhost:8080/sign
-
-# Sign by hash only (not yet implemented)
-curl -X POST \
-  -H "X-Scittish-Payload-Hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" \
-  http://localhost:8080/sign
 ```
 
-Request:
-- **Body**: Raw payload bytes (required unless `X-Scittish-Payload-Hash` is provided)
-- **Content-Type**: The content type of the payload (used in the signed statement)
+Response (`202 Accepted`):
+```json
+{"job_id": "abc123...", "status": "pending"}
+```
+
+The `Location` header contains the polling URL.
+
+**Step 2: Poll for completion**
+
+```bash
+curl http://localhost:8080/sign/{job_id}
+```
+
+Response while processing (`202 Accepted`):
+```json
+{"job_id": "abc123...", "status": "processing"}
+```
+
+Response when complete (`200 OK`):
+- Raw COSE bytes (`application/cose` content type)
+
+**One-liner with polling:**
+
+```bash
+# Submit and poll until done
+JOB=$(curl -s -X POST --data-binary '@artifact.json' \
+  -H "Content-Type: application/json" \
+  http://localhost:8080/sign | jq -r '.job_id')
+
+while true; do
+  RESP=$(curl -s -w "%{http_code}" -o /tmp/receipt.cose http://localhost:8080/sign/$JOB)
+  [ "$RESP" = "200" ] && break
+  sleep 1
+done
+# Receipt is now in /tmp/receipt.cose
+```
 
 Request headers:
 - `X-Scittish-Subject`: Optional subject string used as the SCITT feed
 - `X-Scittish-Payload-Hash`: SHA256 hash of the payload (64-character hex string). If provided, body is ignored. (Not yet implemented)
 
-Response:
-- Raw COSE bytes (`application/cose` content type)
-
-Save the response to a file:
-```bash
-curl -X POST --data-binary '@artifact.json' \
-  -H "Content-Type: application/json" \
-  -o receipt.cose \
-  http://localhost:8080/sign
-```
-
 The receipt (also known as a [transparent statement](https://datatracker.ietf.org/doc/draft-ietf-scitt-architecture/)) is a COSE signed statement with an embedded receipt from the SCITT ledger.
 
-Response headers include `X-Scittish-Cache-Hit: true/false` to indicate if the response was served from cache. The cache is keyed by both payload hash and subject, so the same payload with different subjects will produce different receipts.
+**Caching:** If the same payload (and subject) was previously signed, the receipt is returned immediately with `200 OK` and `X-Scittish-Cache-Hit: true`.
 
 ### Get attestation token
 
