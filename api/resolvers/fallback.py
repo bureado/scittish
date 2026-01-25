@@ -124,7 +124,12 @@ class BearerTokenResolver(SubjectResolver):
         try:
             # Decode WITHOUT verification - we only need claims for subject resolution
             # This is safe because we're not using this for authn/authz
-            claims = jwt.decode(token, options={"verify_signature": False})
+            # We allow common algorithms even though we're not verifying signatures
+            claims = jwt.decode(
+                token, 
+                options={"verify_signature": False},
+                algorithms=["HS256", "RS256", "ES256", "PS256", "none"]
+            )
             
             # Try to extract identity claims in priority order
             claim_priority = [
@@ -160,20 +165,32 @@ class BearerTokenResolver(SubjectResolver):
                 metadata={"note": "JWT present but no identity claims found"},
             )
             
-        except jwt.DecodeError as e:
-            logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
+        except AttributeError as e:
+            # This can happen if jwt is None despite our check
+            logger.warning(f"Bearer token resolver: PyJWT error - {e}")
             return ResolverResult(
                 subject=None,
                 resolver_name=self.name,
-                metadata={"error": f"Invalid JWT: {str(e)}"},
+                metadata={"error": "PyJWT error"},
             )
         except Exception as e:
-            logger.warning(f"Bearer token resolver: unexpected error - {e}")
-            return ResolverResult(
-                subject=None,
-                resolver_name=self.name,
-                metadata={"error": f"Unexpected error: {str(e)}"},
-            )
+            # Catch all JWT exceptions (DecodeError, InvalidTokenError, etc.)
+            # Use string matching to differentiate error types
+            error_str = str(type(e).__name__)
+            if "Decode" in error_str or "Invalid" in error_str:
+                logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
+                return ResolverResult(
+                    subject=None,
+                    resolver_name=self.name,
+                    metadata={"error": f"Invalid JWT: {str(e)}"},
+                )
+            else:
+                logger.warning(f"Bearer token resolver: unexpected error - {e}")
+                return ResolverResult(
+                    subject=None,
+                    resolver_name=self.name,
+                    metadata={"error": f"Unexpected error: {str(e)}"},
+                )
 
 
 class HashFallbackResolver(SubjectResolver):
