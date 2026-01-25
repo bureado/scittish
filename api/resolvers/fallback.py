@@ -67,8 +67,12 @@ class BearerTokenResolver(SubjectResolver):
     This resolver extracts identity information from a JWT bearer token
     provided in the Authorization header and uses it to derive a subject.
     
-    Note: This is a stub implementation. A real implementation would
-    validate the token and extract claims.
+    For OIDC JWT tokens, it extracts claims like 'sub', 'oid', 
+    'preferred_username', or 'email' to construct a subject identifier.
+    
+    Note: This performs unvalidated JWT parsing - it extracts claims
+    without cryptographic verification. This is suitable for subject
+    resolution but should NOT be used for authentication/authorization.
     """
     
     @property
@@ -81,28 +85,91 @@ class BearerTokenResolver(SubjectResolver):
     
     @property
     def description(self) -> str:
-        return "Derives subject from Authorization bearer token (stub)"
+        return "Derives subject from OIDC JWT claims in Authorization bearer token"
     
     def resolve(self, context: ResolverContext) -> ResolverResult:
-        # STUB: In a real implementation, this would:
-        # 1. Extract the Authorization header
-        # 2. Validate the JWT token
-        # 3. Extract claims (sub, oid, preferred_username, etc.)
-        # 4. Construct a subject from the claims
+        """
+        Extract subject from JWT bearer token claims.
         
+        Attempts to extract claims in the following priority order:
+        1. 'sub' (subject) - standard OIDC claim
+        2. 'oid' (object ID) - Azure AD claim
+        3. 'preferred_username' - OIDC claim
+        4. 'email' - common claim
+        
+        Returns a subject in the format: jwt:<claim_type>:<claim_value>
+        """
         auth_header = context.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
+            logger.debug("Bearer token resolver: no Bearer token in Authorization header")
             return ResolverResult(subject=None, resolver_name=self.name)
         
-        # STUB: Just acknowledge we have a token but don't process it
-        logger.debug("Bearer token resolver: token present but processing not implemented")
+        # Extract token (remove "Bearer " prefix)
+        token = auth_header[7:].strip()
         
-        # Return None - this is a stub
-        return ResolverResult(
-            subject=None,
-            resolver_name=self.name,
-            metadata={"note": "stub implementation - token validation not implemented"},
-        )
+        try:
+            # Import here to avoid dependency issues if PyJWT not installed
+            import jwt
+            
+            # Decode WITHOUT verification - we only need claims for subject resolution
+            # This is safe because we're not using this for authn/authz
+            claims = jwt.decode(token, options={"verify_signature": False})
+            
+            # Try to extract identity claims in priority order
+            claim_priority = [
+                ("sub", "subject"),
+                ("oid", "object-id"),
+                ("preferred_username", "username"),
+                ("email", "email"),
+            ]
+            
+            for claim_name, claim_type in claim_priority:
+                claim_value = claims.get(claim_name)
+                if claim_value:
+                    subject = f"jwt:{claim_type}:{claim_value}"
+                    logger.info(f"Bearer token resolver: extracted {claim_name} claim")
+                    
+                    return ResolverResult(
+                        subject=subject,
+                        resolver_name=self.name,
+                        confidence=0.8,
+                        metadata={
+                            "source": "JWT bearer token",
+                            "claim_type": claim_name,
+                            "issuer": claims.get("iss", "unknown"),
+                        },
+                        indexable=True,
+                    )
+            
+            # Token decoded but no useful claims found
+            logger.debug(f"Bearer token resolver: no usable identity claims in token (claims: {list(claims.keys())})")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"note": "JWT present but no identity claims found"},
+            )
+            
+        except ImportError:
+            logger.warning("Bearer token resolver: PyJWT not installed - cannot parse JWT tokens")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"error": "PyJWT not installed"},
+            )
+        except jwt.DecodeError as e:
+            logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"error": f"Invalid JWT: {str(e)}"},
+            )
+        except Exception as e:
+            logger.warning(f"Bearer token resolver: unexpected error - {e}")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"error": f"Unexpected error: {str(e)}"},
+            )
 
 
 class HashFallbackResolver(SubjectResolver):
