@@ -100,26 +100,32 @@ def _get_payload_hash(payload: Optional[bytes], payload_hash: Optional[str]) -> 
     raise ValueError("Either payload or payload_hash must be provided")
 
 
-def _get_cache_path(payload_hash: str) -> Path:
+def _get_cache_key(payload_hash: str, subject: Optional[str]) -> str:
+    """Compute cache key from payload hash and subject."""
+    key_input = f"{payload_hash}:{subject or ''}"
+    return hashlib.sha256(key_input.encode("utf-8")).hexdigest()
+
+
+def _get_cache_path(cache_key: str) -> Path:
     """Get the filesystem path for a cached receipt."""
-    return CACHE_DIR / f"{payload_hash}.receipt"
+    return CACHE_DIR / f"{cache_key}.receipt"
 
 
-def _get_cached_receipt(payload_hash: str) -> Optional[bytes]:
+def _get_cached_receipt(cache_key: str) -> Optional[bytes]:
     """Retrieve a cached receipt if it exists."""
-    cache_path = _get_cache_path(payload_hash)
+    cache_path = _get_cache_path(cache_key)
     if cache_path.exists():
-        logger.info(f"Cache hit for payload hash {payload_hash[:16]}...")
+        logger.info(f"Cache hit for cache key {cache_key[:16]}...")
         return cache_path.read_bytes()
     return None
 
 
-def _store_receipt(payload_hash: str, receipt: bytes) -> None:
+def _store_receipt(cache_key: str, receipt: bytes) -> None:
     """Store a receipt in the cache."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = _get_cache_path(payload_hash)
+    cache_path = _get_cache_path(cache_key)
     cache_path.write_bytes(receipt)
-    logger.info(f"Stored receipt in cache for payload hash {payload_hash[:16]}...")
+    logger.info(f"Stored receipt in cache for cache key {cache_key[:16]}...")
 
 
 def _get_issuer(root_cert_pem: str) -> str:
@@ -239,7 +245,7 @@ def properties():
 @app.route("/sign", methods=["POST"])
 def sign():
     """
-    Sign a payload and return a SCITT transparent statement.
+    Sign a payload and return a SCITT transparent statement (raw COSE bytes).
     
     Request:
         - Body: Raw payload bytes (required unless X-Scittish-Payload-Hash is provided)
@@ -250,7 +256,7 @@ def sign():
         - X-Scittish-Payload-Hash: SHA256 hash of the payload (if provided, body is ignored)
     
     Response:
-        - transparent_statement: The SCITT transparent statement (base64 encoded)
+        - Raw COSE bytes (application/cose)
     
     Response headers:
         - X-Scittish-Cache-Hit: "true" if served from cache, "false" otherwise
@@ -283,12 +289,15 @@ def sign():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    logger.info(f"Processing payload with hash {computed_hash[:16]}...")
+    logger.info(f"Processing payload with hash {computed_hash[:16]}..., subject={subject}")
+
+    # Compute cache key from payload hash and subject
+    cache_key = _get_cache_key(computed_hash, subject)
 
     # Check cache first
-    cached_receipt = _get_cached_receipt(computed_hash)
+    cached_receipt = _get_cached_receipt(cache_key)
     if cached_receipt is not None:
-        response = jsonify({"transparent_statement": base64.b64encode(cached_receipt).decode("utf-8")})
+        response = app.response_class(cached_receipt, mimetype="application/cose")
         response.headers["X-Scittish-Cache-Hit"] = "true"
         return response
 
@@ -309,9 +318,9 @@ def sign():
         return jsonify({"error": f"Submission to SCITT ledger failed: {e}"}), 502
 
     # Cache the transparent statement
-    _store_receipt(computed_hash, transparent_statement)
+    _store_receipt(cache_key, transparent_statement)
 
-    response = jsonify({"transparent_statement": base64.b64encode(transparent_statement).decode("utf-8")})
+    response = app.response_class(transparent_statement, mimetype="application/cose")
     response.headers["X-Scittish-Cache-Hit"] = "false"
     return response
 

@@ -71,13 +71,19 @@ Request headers:
 - `X-Scittish-Payload-Hash`: SHA256 hash of the payload (64-character hex string). If provided, body is ignored. (Not yet implemented)
 
 Response:
-```json
-{"transparent_statement": "<base64-encoded receipt>"}
+- Raw COSE bytes (`application/cose` content type)
+
+Save the response to a file:
+```bash
+curl -X POST --data-binary '@artifact.json' \
+  -H "Content-Type: application/json" \
+  -o receipt.cose \
+  http://localhost:8080/sign
 ```
 
 The receipt (also known as a [transparent statement](https://datatracker.ietf.org/doc/draft-ietf-scitt-architecture/)) is a COSE signed statement with an embedded receipt from the SCITT ledger.
 
-Response headers include `X-Scittish-Cache-Hit: true/false` to indicate if the response was served from cache.
+Response headers include `X-Scittish-Cache-Hit: true/false` to indicate if the response was served from cache. The cache is keyed by both payload hash and subject, so the same payload with different subjects will produce different receipts.
 
 ### Get attestation token
 
