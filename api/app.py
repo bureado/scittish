@@ -32,6 +32,14 @@ from certs import (
 from pyscitt.crypto import Signer, sign_statement
 from pyscitt.client import Client
 
+# Subject resolver imports
+from resolvers import ResolverContext, ResolverResult
+from resolvers.registry import get_default_registry
+
+# Indexer imports
+from indexers import IndexerContext
+from indexers.oci import OciIndexer
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +64,9 @@ _token_cache: dict[str, Tuple[str, float]] = {}
 
 # Global certificate chain (initialized on startup)
 _certificate_chain: Optional[CertificateChain] = None
+
+# Indexers
+_oci_indexer = OciIndexer()
 
 # Thread pool for async signing
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -199,13 +210,14 @@ def _save_job(job: JobInfo) -> None:
     job_path.write_text(json.dumps(data))
 
 
-def _save_job_payload(job_id: str, payload: bytes, content_type: str, subject: Optional[str]) -> None:
+def _save_job_payload(job_id: str, payload: bytes, content_type: str, client_subject: Optional[str], headers: dict[str, str]) -> None:
     """Save job payload and metadata for background processing."""
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     payload_path = _get_job_payload_path(job_id)
     metadata = {
         "content_type": content_type,
-        "subject": subject,
+        "client_subject": client_subject,
+        "headers": headers,
     }
     # Store as JSON with base64-encoded payload
     data = {
@@ -215,8 +227,8 @@ def _save_job_payload(job_id: str, payload: bytes, content_type: str, subject: O
     payload_path.write_text(json.dumps(data))
 
 
-def _load_job_payload(job_id: str) -> Optional[Tuple[bytes, str, Optional[str]]]:
-    """Load job payload and metadata. Returns (payload, content_type, subject) or None."""
+def _load_job_payload(job_id: str) -> Optional[Tuple[bytes, str, Optional[str], dict[str, str]]]:
+    """Load job payload and metadata. Returns (payload, content_type, client_subject, headers) or None."""
     payload_path = _get_job_payload_path(job_id)
     if not payload_path.exists():
         return None
@@ -224,7 +236,12 @@ def _load_job_payload(job_id: str) -> Optional[Tuple[bytes, str, Optional[str]]]
         data = json.loads(payload_path.read_text())
         payload = base64.b64decode(data["payload"])
         metadata = data["metadata"]
-        return payload, metadata["content_type"], metadata.get("subject")
+        return (
+            payload,
+            metadata["content_type"],
+            metadata.get("client_subject"),
+            metadata.get("headers", {}),
+        )
     except Exception as e:
         logger.error(f"Failed to load payload for job {job_id}: {e}")
         return None
@@ -258,18 +275,48 @@ def _process_signing_job(job_id: str) -> None:
         _save_job(job)
         return
     
-    payload, content_type, subject = payload_data
+    payload, content_type, client_subject, headers = payload_data
     payload_hash = hashlib.sha256(payload).hexdigest()
+    
+    # Resolve subject using subject resolver chain
+    resolver_registry = get_default_registry()
+    resolver_context = ResolverContext(
+        payload=payload,
+        payload_hash=payload_hash,
+        content_type=content_type,
+        client_subject=client_subject,
+        headers=headers,
+        metadata={"eku": "1.3.6.1.5.5.7.3.36"},  # Provide EKU for fallback resolver
+    )
+    resolver_result = resolver_registry.resolve(resolver_context)
+    resolved_subject = resolver_result.subject
+    
+    logger.info(f"Subject resolved: {resolved_subject} (by {resolver_result.resolver_name})")
     
     try:
         # Sign the payload
-        signed_statement = _sign_payload(payload, payload_hash, content_type, subject)
+        signed_statement = _sign_payload(payload, payload_hash, content_type, resolved_subject)
         
         # Submit to SCITT ledger
         transparent_statement = _submit_statement(signed_statement)
         
         # Store in cache (job_id is the cache key)
         _store_receipt(job_id, transparent_statement)
+        
+        # Index the receipt if subject is indexable
+        if resolved_subject and resolver_result.indexable and _oci_indexer.enabled:
+            indexer_context = IndexerContext(
+                receipt=transparent_statement,
+                subject=resolved_subject,
+                payload_hash=payload_hash,
+                content_type=content_type,
+                resolver_metadata=resolver_result.metadata,
+            )
+            indexer_result = _oci_indexer.index(indexer_context)
+            if indexer_result.success:
+                logger.info(f"Receipt indexed: {indexer_result.reference}")
+            else:
+                logger.warning(f"Receipt indexing failed: {indexer_result.error}")
         
         # Mark job as completed
         job.status = JobStatus.COMPLETED
@@ -394,11 +441,17 @@ def properties():
     Response (JSON):
         - certificate_chain: The PEM-encoded certificate chain
         - scitt_url: The URL of the SCITT ledger
+        - subject_resolvers: List of available subject resolvers
+        - indexers: List of available indexers
     """
     chain = get_certificate_chain()
+    resolver_registry = get_default_registry()
+    
     return jsonify({
         "certificate_chain": chain.chain_pem,
         "scitt_url": SCITT_URL,
+        "subject_resolvers": resolver_registry.to_dict(),
+        "indexers": [_oci_indexer.to_dict()],
     })
 
 
@@ -429,9 +482,12 @@ def sign():
     logger.info(f"Received sign request from {request.remote_addr}")
     
     # Get metadata from headers
-    subject = request.headers.get("X-Scittish-Subject")
+    client_subject = request.headers.get("X-Scittish-Subject")
     payload_hash = request.headers.get("X-Scittish-Payload-Hash")
     content_type = request.content_type or "application/octet-stream"
+    
+    # Capture relevant headers for subject resolution
+    req_headers = {k: v for k, v in request.headers if k.startswith("X-Scittish-") or k == "Authorization"}
     
     # Get raw payload from body
     payload = request.get_data() if not payload_hash else None
@@ -454,10 +510,10 @@ def sign():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    logger.info(f"Processing payload with hash {computed_hash[:16]}..., subject={subject}")
+    logger.info(f"Processing payload with hash {computed_hash[:16]}..., client_subject={client_subject}")
 
-    # Compute cache key from payload hash and subject (this becomes the job_id)
-    job_id = _get_cache_key(computed_hash, subject)
+    # Compute cache key from payload hash and client subject (this becomes the job_id)
+    job_id = _get_cache_key(computed_hash, client_subject)
 
     # Check cache first - if we have a receipt, return it immediately
     cached_receipt = _get_cached_receipt(job_id)
@@ -502,7 +558,7 @@ def sign():
     _save_job(job)
     
     # Save payload for background processing
-    _save_job_payload(job_id, payload, content_type, subject)
+    _save_job_payload(job_id, payload, content_type, client_subject, req_headers)
     
     # Submit to thread pool
     _executor.submit(_process_signing_job, job_id)

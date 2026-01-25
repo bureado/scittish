@@ -42,19 +42,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY api/app.py api/certs.py ./
+COPY api/resolvers ./resolvers
+COPY api/indexers ./indexers
 
 # Copy Go binary from builder
 COPY --from=go-builder /build/attest-helper /app/attest-helper
 
-# Create directories for certs and cache
-RUN mkdir -p /var/cache/scittish /var/lib/scittish/certs
+# Create directories for certs, cache, and jobs
+RUN mkdir -p /var/cache/scittish /var/lib/scittish/certs /var/cache/scittish/jobs
 
 ENV SCITT_CACHE_DIR=/var/cache/scittish
 ENV SCITT_CERTS_DIR=/var/lib/scittish/certs
+ENV SCITT_JOBS_DIR=/var/cache/scittish/jobs
 ENV SCITT_URL=https://localhost:8000
 ENV MAA_ENDPOINT=sharedeus.eus.attest.azure.net
 ENV ATTEST_HELPER_PATH=/app/attest-helper
 ENV ALLOW_FAKE_ATTESTATION=false
+ENV OCI_REGISTRY=
+ENV OCI_NAMESPACE=scittish/subjects
 ENV PYTHONPATH=/app
 
 EXPOSE 8080
