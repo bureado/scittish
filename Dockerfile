@@ -33,6 +33,15 @@ RUN pip install --no-cache-dir \
     azure-confidentialledger==1.* \
     loguru
 
+# Install oras CLI for OCI registry indexing
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -sLO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+    && tar -xzf oras_1.2.0_linux_amd64.tar.gz -C /usr/local/bin oras \
+    && rm oras_1.2.0_linux_amd64.tar.gz \
+    && apt-get remove -y curl \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy pyscitt module
 COPY pyscitt/pyscitt /app/pyscitt
 
@@ -60,6 +69,7 @@ ENV ATTEST_HELPER_PATH=/app/attest-helper
 ENV ALLOW_FAKE_ATTESTATION=false
 ENV OCI_REGISTRY=
 ENV OCI_NAMESPACE=scittish/subjects
+ENV ORAS_PATH=/usr/local/bin/oras
 ENV PYTHONPATH=/app
 
 EXPOSE 8080
