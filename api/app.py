@@ -6,6 +6,7 @@ Designed to run in a Docker container.
 import base64
 import hashlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,14 @@ from certs import (
 
 # pyscitt imports for signing
 from pyscitt.crypto import Signer, sign_statement
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -45,12 +54,12 @@ def initialize_certificate_chain() -> CertificateChain:
     
     if _certificate_chain is None:
         # Generate new chain
-        print("Generating new certificate chain...", file=sys.stderr)
+        logger.info("Generating new certificate chain...")
         _certificate_chain = generate_certificate_chain()
         save_certificate_chain(_certificate_chain, CERTS_DIR)
-        print("Certificate chain generated and saved.", file=sys.stderr)
+        logger.info("Certificate chain generated and saved.")
     else:
-        print("Loaded existing certificate chain.", file=sys.stderr)
+        logger.info("Loaded existing certificate chain.")
     
     # Print certificate chain to logs
     print("=" * 60, file=sys.stderr)
@@ -93,6 +102,7 @@ def _get_cached_receipt(payload_hash: str) -> Optional[bytes]:
     """Retrieve a cached receipt if it exists."""
     cache_path = _get_cache_path(payload_hash)
     if cache_path.exists():
+        logger.info(f"Cache hit for payload hash {payload_hash[:16]}...")
         return cache_path.read_bytes()
     return None
 
@@ -102,6 +112,7 @@ def _store_receipt(payload_hash: str, receipt: bytes) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = _get_cache_path(payload_hash)
     cache_path.write_bytes(receipt)
+    logger.info(f"Stored receipt in cache for payload hash {payload_hash[:16]}...")
 
 
 def _get_did_x509_issuer(leaf_cert_pem: str, root_cert_pem: str) -> str:
@@ -144,6 +155,8 @@ def _sign_payload(
             "Signing by hash only is not yet implemented. Please provide the full payload."
         )
     
+    logger.info(f"Signing payload with hash {payload_hash[:16]}...")
+    
     chain = get_certificate_chain()
     
     # Compute did:x509 issuer
@@ -168,6 +181,8 @@ def _sign_payload(
         cwt=True,  # Use CWT claims format
     )
     
+    logger.info(f"Signed statement created ({len(signed_statement)} bytes)")
+    
     return signed_statement
 
 
@@ -177,9 +192,11 @@ def _submit_statement(signed_statement: bytes) -> bytes:
     
     STUB: This will be implemented to use pyscitt's submit functionality.
     """
+    logger.info(f"Submitting signed statement to SCITT ledger ({len(signed_statement)} bytes)...")
     # TODO: Implement using pyscitt.client.Client
     # client = Client(url=SCITT_URL, ...)
     # submission = client.submit_signed_statement_and_wait_for_receipt(signed_statement)
+    # logger.info(f"Received receipt from SCITT ledger")
     # return submission.receipt
     raise NotImplementedError("submit_statement stub - implement with pyscitt")
 
@@ -217,11 +234,14 @@ def sign():
         - subject: Optional subject string for the signed statement
     
     Response:
-        - receipt: The SCITT receipt (base64 encoded)
+        - signed_statement: The signed COSE statement (base64 encoded)
+        - receipt: The SCITT receipt (base64 encoded) - when submission is implemented
     
     Response headers:
         - X-Scittish-Cache-Hit: "true" if served from cache, "false" otherwise
     """
+    logger.info(f"Received sign request from {request.remote_addr}")
+    
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body must be JSON"}), 400
@@ -247,28 +267,30 @@ def sign():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
+    logger.info(f"Processing payload with hash {computed_hash[:16]}...")
+
     # Check cache first
     cached_receipt = _get_cached_receipt(computed_hash)
     if cached_receipt is not None:
-        import base64
-        response = jsonify({"receipt": base64.b64encode(cached_receipt).decode("utf-8")})
+        response = jsonify({"signed_statement": base64.b64encode(cached_receipt).decode("utf-8")})
         response.headers["X-Scittish-Cache-Hit"] = "true"
         return response
 
-    # Sign and submit
+    # Sign the payload
     try:
         signed_statement = _sign_payload(payload, computed_hash, subject)
-        receipt = _submit_statement(signed_statement)
     except NotImplementedError as e:
         return jsonify({"error": f"Not yet implemented: {e}"}), 501
     except Exception as e:
+        logger.error(f"Signing failed: {e}")
         return jsonify({"error": f"Signing failed: {e}"}), 500
 
-    # Cache the receipt
-    _store_receipt(computed_hash, receipt)
+    # Cache the signed statement (will be replaced with receipt when submission is implemented)
+    _store_receipt(computed_hash, signed_statement)
 
-    import base64
-    response = jsonify({"receipt": base64.b64encode(receipt).decode("utf-8")})
+    # TODO: Submit to SCITT ledger and return receipt instead
+    # For now, return the signed statement directly for testing
+    response = jsonify({"signed_statement": base64.b64encode(signed_statement).decode("utf-8")})
     response.headers["X-Scittish-Cache-Hit"] = "false"
     return response
 
