@@ -1,6 +1,6 @@
 # scittish
 
-A simple REST API for SCITT signing operations, designed to run in a Docker container.
+A simple REST API for SCITT signing and submission operations, designed to run in a Docker container.
 
 ## Building
 
@@ -18,7 +18,9 @@ docker run -p 8080:8080 \
   scittish:latest
 ```
 
-This persists certificates and receipt cache across container restarts. The certificate chain is printed to the container logs on startup.
+**Note:** `SCITT_URL` must point to a running SCITT ledger instance. The container will sign payloads and submit them to this ledger. You can run your own ledger using [scitt-ccf-ledger](https://github.com/microsoft/scitt-ccf-ledger) (virtual mode is available if you don't have confidential compute hardware).
+
+This persists certificates and the receipt cache across container restarts. The certificate chain is printed to the container logs on startup.
 
 ## API Usage
 
@@ -43,7 +45,14 @@ Request body:
 - `payload_hash`: SHA256 hash of the payload as a 64-character hex string (not yet implemented)
 - `subject`: Optional subject string used as the SCITT feed
 
-Response headers include `X-Scittish-Cache-Hit: true/false` to indicate if the receipt was served from cache.
+Response:
+```json
+{"transparent_statement": "<base64-encoded receipt>"}
+```
+
+The receipt (also known as a [transparent statement](https://datatracker.ietf.org/doc/draft-ietf-scitt-architecture/)) is a COSE signed statement with an embedded receipt from the SCITT ledger.
+
+Response headers include `X-Scittish-Cache-Hit: true/false` to indicate if the response was served from cache.
 
 ### Health check
 
