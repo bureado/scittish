@@ -130,11 +130,12 @@ class BearerTokenResolver(SubjectResolver):
         try:
             # Decode WITHOUT verification - we only need claims for subject resolution
             # This is safe because we're not using this for authn/authz
-            # We allow common algorithms (excluding 'none' for security)
+            # We allow asymmetric algorithms (RS*, ES*, PS*) only to avoid HMAC key confusion
+            # HMAC algorithms are excluded as they could be vulnerable to key confusion attacks
             claims = jwt.decode(
                 token, 
                 options={"verify_signature": False},
-                algorithms=["HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
+                algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
             )
             
             # Try to extract identity claims in priority order
@@ -154,7 +155,7 @@ class BearerTokenResolver(SubjectResolver):
                 claim_value = claims.get(claim_name)
                 if claim_value:
                     subject = f"jwt:{claim_type}:{claim_value}"
-                    logger.info(f"Bearer token resolver: extracted {claim_name} claim")
+                    logger.debug(f"Bearer token resolver: extracted {claim_type} claim")
                     
                     # Build metadata - capture GitHub Actions-specific claims if present
                     metadata = {
@@ -186,14 +187,14 @@ class BearerTokenResolver(SubjectResolver):
                     )
             
             # Token decoded but no useful claims found
-            logger.debug(f"Bearer token resolver: no usable identity claims in token (claims: {list(claims.keys())})")
+            logger.debug(f"Bearer token resolver: no usable identity claims in token ({len(claims)} claims present)")
             return ResolverResult(
                 subject=None,
                 resolver_name=self.name,
                 metadata={"note": "JWT present but no identity claims found"},
             )
             
-        except (jwt.DecodeError, jwt.InvalidTokenError) as e:
+        except jwt.DecodeError as e:
             logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
             return ResolverResult(
                 subject=None,
