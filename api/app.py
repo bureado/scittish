@@ -3,6 +3,7 @@ Simple REST API for SCITT signing operations.
 Designed to run in a Docker container.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -10,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
 from flask import Flask, jsonify, request
 
 from certs import (
@@ -19,9 +22,8 @@ from certs import (
     save_certificate_chain,
 )
 
-# Stub imports - will use actual pyscitt functions later
-# from pyscitt.client import Client
-# from pyscitt.crypto import sign_statement
+# pyscitt imports for signing
+from pyscitt.crypto import Signer, sign_statement
 
 app = Flask(__name__)
 
@@ -102,23 +104,71 @@ def _store_receipt(payload_hash: str, receipt: bytes) -> None:
     cache_path.write_bytes(receipt)
 
 
+def _get_did_x509_issuer(leaf_cert_pem: str, root_cert_pem: str) -> str:
+    """
+    Compute the did:x509 issuer string from the certificate chain.
+    
+    Format: did:x509:0:sha256:<root_fingerprint_b64url>::san:dns:<leaf_cn>
+    
+    The root fingerprint is the SHA256 hash of the root certificate,
+    base64url encoded without padding.
+    """
+    # Get root cert fingerprint (base64url encoded, no padding)
+    root_cert = x509.load_pem_x509_certificate(root_cert_pem.encode("ascii"))
+    root_fingerprint = base64.urlsafe_b64encode(
+        root_cert.fingerprint(hashes.SHA256())
+    ).decode("ascii").rstrip("=")
+    
+    return f"did:x509:0:sha256:{root_fingerprint}::san:dns:scittish.local"
+
+
 def _sign_payload(
     payload: Optional[dict], payload_hash: str, subject: Optional[str] = None
 ) -> bytes:
     """
     Sign the payload using pyscitt.
     
-    STUB: This will be implemented to use pyscitt's sign functionality.
-    
     Args:
         payload: The full payload dict (if provided)
         payload_hash: The SHA256 hash of the payload
-        subject: Optional subject string for the signed statement
+        subject: Optional subject string for the signed statement (used as feed)
+    
+    Returns:
+        The signed COSE statement bytes.
+    
+    Raises:
+        NotImplementedError: If only payload_hash is provided (not yet supported)
     """
-    # TODO: Implement using pyscitt.crypto or similar
-    # chain = get_certificate_chain()
-    # signed_statement = sign_statement(payload or payload_hash, chain.leaf_key_pem, subject=subject, ...)
-    raise NotImplementedError("sign_payload stub - implement with pyscitt")
+    if payload is None:
+        raise NotImplementedError(
+            "Signing by hash only is not yet implemented. Please provide the full payload."
+        )
+    
+    chain = get_certificate_chain()
+    
+    # Compute did:x509 issuer
+    issuer = _get_did_x509_issuer(chain.leaf_cert_pem, chain.root_cert_pem)
+    
+    # Create signer with x5c chain (leaf first, then root)
+    signer = Signer(
+        private_key=chain.leaf_key_pem,
+        issuer=issuer,
+        algorithm="ES256",
+        x5c=[chain.leaf_cert_pem, chain.root_cert_pem],
+    )
+    
+    # Sign the statement
+    statement_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    
+    signed_statement = sign_statement(
+        signer=signer,
+        statement=statement_bytes,
+        content_type="application/json",
+        feed=subject,  # Use subject as feed if provided
+        cwt=True,  # Use CWT claims format
+    )
+    
+    return signed_statement
 
 
 def _submit_statement(signed_statement: bytes) -> bytes:
