@@ -8,10 +8,14 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from flask import Flask, jsonify, request
 
 from certs import (
@@ -39,6 +43,12 @@ app = Flask(__name__)
 CACHE_DIR = Path(os.environ.get("SCITT_CACHE_DIR", "/var/cache/scittish"))
 CERTS_DIR = Path(os.environ.get("SCITT_CERTS_DIR", "/var/lib/scittish/certs"))
 SCITT_URL = os.environ.get("SCITT_URL", "https://localhost:8000")
+MAA_ENDPOINT = os.environ.get("MAA_ENDPOINT", "sharedeus.eus.attest.azure.net")
+ATTEST_HELPER_PATH = os.environ.get("ATTEST_HELPER_PATH", "/app/attest-helper")
+ALLOW_FAKE_ATTESTATION = os.environ.get("ALLOW_FAKE_ATTESTATION", "false").lower() == "true"
+
+# Token cache: key -> (token, expiry_time)
+_token_cache: dict[str, Tuple[str, float]] = {}
 
 # Global certificate chain (initialized on startup)
 _certificate_chain: Optional[CertificateChain] = None
@@ -302,6 +312,196 @@ def sign():
     _store_receipt(computed_hash, transparent_statement)
 
     response = jsonify({"transparent_statement": base64.b64encode(transparent_statement).decode("utf-8")})
+    response.headers["X-Scittish-Cache-Hit"] = "false"
+    return response
+
+
+def _sign_nonce_with_key(nonce: bytes) -> bytes:
+    """
+    Sign a nonce with the leaf private key to prove key control.
+    Returns the signature bytes.
+    """
+    chain = get_certificate_chain()
+    
+    # Load the private key
+    private_key = serialization.load_pem_private_key(
+        chain.leaf_key_pem.encode("utf-8"),
+        password=None,
+    )
+    
+    # Sign the nonce
+    if isinstance(private_key, ec.EllipticCurvePrivateKey):
+        signature = private_key.sign(nonce, ec.ECDSA(hashes.SHA256()))
+    else:
+        raise ValueError("Unsupported key type for signing")
+    
+    return signature
+
+
+def _get_token_cache_key(nonce: Optional[str], maa_endpoint: str) -> str:
+    """Generate a cache key for attestation tokens."""
+    data = f"{nonce or ''}:{maa_endpoint}"
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def _get_cached_token(cache_key: str) -> Optional[str]:
+    """Get a cached token if it exists and is not expired."""
+    if cache_key in _token_cache:
+        token, expiry = _token_cache[cache_key]
+        if time.time() < expiry:
+            logger.info(f"Token cache hit for key {cache_key[:16]}...")
+            return token
+        else:
+            # Token expired, remove from cache
+            del _token_cache[cache_key]
+            logger.info(f"Token expired for key {cache_key[:16]}...")
+    return None
+
+
+def _cache_token(cache_key: str, token: str, ttl_seconds: float = 3600) -> None:
+    """Cache a token with TTL."""
+    expiry = time.time() + ttl_seconds
+    _token_cache[cache_key] = (token, expiry)
+    logger.info(f"Cached token for key {cache_key[:16]}... (TTL: {ttl_seconds}s)")
+
+
+def _get_token_expiry(token: str) -> Optional[float]:
+    """Extract expiry time from JWT token."""
+    try:
+        # JWT is base64url encoded: header.payload.signature
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        
+        # Decode payload (add padding if needed)
+        payload_b64 = parts[1]
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        exp = payload.get("exp")
+        if exp:
+            return float(exp)
+    except Exception as e:
+        logger.warning(f"Failed to parse token expiry: {e}")
+    return None
+
+
+def _call_attest_helper(runtime_data: bytes, maa_endpoint: str, raw_only: bool = False) -> dict:
+    """Call the attest-helper Go binary."""
+    cmd = [
+        ATTEST_HELPER_PATH,
+        "-runtime-data", base64.b64encode(runtime_data).decode("utf-8"),
+        "-maa-endpoint", maa_endpoint,
+    ]
+    
+    if raw_only:
+        cmd.append("-raw")
+    
+    if ALLOW_FAKE_ATTESTATION:
+        cmd.append("-allow-fake")
+    
+    logger.info(f"Calling attest-helper: {' '.join(cmd)}")
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"attest-helper failed: {result.stderr}")
+            return {"error": f"attest-helper failed: {result.stderr}"}
+        
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        return {"error": "attest-helper timed out"}
+    except json.JSONDecodeError as e:
+        return {"error": f"failed to parse attest-helper output: {e}"}
+    except FileNotFoundError:
+        return {"error": f"attest-helper not found at {ATTEST_HELPER_PATH}"}
+
+
+@app.route("/attest", methods=["POST"])
+def attest():
+    """
+    Get an attestation token (EAT) from Microsoft Azure Attestation.
+    
+    Request body (JSON):
+        - nonce: Optional base64-encoded nonce for freshness
+        - maa_endpoint: Optional MAA endpoint (default: sharedeus.eus.attest.azure.net)
+    
+    Response:
+        - token: The MAA JWT token (Entity Attestation Token)
+    
+    Response headers:
+        - X-Scittish-Cache-Hit: "true" if served from cache, "false" otherwise
+    """
+    logger.info(f"Received attest request from {request.remote_addr}")
+    
+    data = request.get_json() or {}
+    nonce_b64 = data.get("nonce")
+    maa_endpoint = data.get("maa_endpoint", MAA_ENDPOINT)
+    
+    # Decode nonce if provided
+    nonce_bytes = b""
+    if nonce_b64:
+        try:
+            nonce_bytes = base64.b64decode(nonce_b64)
+        except Exception as e:
+            return jsonify({"error": f"Invalid nonce encoding: {e}"}), 400
+    
+    # Check cache
+    cache_key = _get_token_cache_key(nonce_b64, maa_endpoint)
+    cached_token = _get_cached_token(cache_key)
+    if cached_token:
+        response = jsonify({"token": cached_token})
+        response.headers["X-Scittish-Cache-Hit"] = "true"
+        return response
+    
+    # Construct runtime_data: nonce + signature over nonce
+    # This proves we control the signing key
+    try:
+        signature = _sign_nonce_with_key(nonce_bytes) if nonce_bytes else b""
+        runtime_data = json.dumps({
+            "nonce": nonce_b64 or "",
+            "signature": base64.b64encode(signature).decode("utf-8") if signature else "",
+            "certificate_chain": get_certificate_chain().chain_pem,
+        }).encode("utf-8")
+    except Exception as e:
+        logger.error(f"Failed to construct runtime_data: {e}")
+        return jsonify({"error": f"Failed to construct runtime_data: {e}"}), 500
+    
+    logger.info(f"Requesting attestation from {maa_endpoint}...")
+    
+    # Call attest-helper
+    result = _call_attest_helper(runtime_data, maa_endpoint)
+    
+    if "error" in result:
+        logger.error(f"Attestation failed: {result['error']}")
+        return jsonify({"error": result["error"]}), 502
+    
+    token = result.get("token")
+    if not token:
+        return jsonify({"error": "No token in attestation response"}), 502
+    
+    # Cache the token
+    expiry = _get_token_expiry(token)
+    if expiry:
+        # Cache until 5 minutes before expiry
+        ttl = max(0, expiry - time.time() - 300)
+    else:
+        # Default 1 hour TTL
+        ttl = 3600
+    
+    _cache_token(cache_key, token, ttl)
+    
+    logger.info("Attestation successful")
+    
+    response = jsonify({"token": token})
     response.headers["X-Scittish-Cache-Hit"] = "false"
     return response
 
