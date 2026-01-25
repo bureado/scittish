@@ -8,6 +8,11 @@ resolvers cannot determine a subject.
 import logging
 from typing import Optional
 
+try:
+    import jwt
+except ImportError:
+    jwt = None  # type: ignore
+
 from .base import SubjectResolver, ResolverContext, ResolverResult
 
 logger = logging.getLogger(__name__)
@@ -107,10 +112,16 @@ class BearerTokenResolver(SubjectResolver):
         # Extract token (remove "Bearer " prefix)
         token = auth_header[7:].strip()
         
+        # Check if PyJWT is available
+        if jwt is None:
+            logger.warning("Bearer token resolver: PyJWT not installed - cannot parse JWT tokens")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"error": "PyJWT not installed"},
+            )
+        
         try:
-            # Import here to avoid dependency issues if PyJWT not installed
-            import jwt
-            
             # Decode WITHOUT verification - we only need claims for subject resolution
             # This is safe because we're not using this for authn/authz
             claims = jwt.decode(token, options={"verify_signature": False})
@@ -149,13 +160,6 @@ class BearerTokenResolver(SubjectResolver):
                 metadata={"note": "JWT present but no identity claims found"},
             )
             
-        except ImportError:
-            logger.warning("Bearer token resolver: PyJWT not installed - cannot parse JWT tokens")
-            return ResolverResult(
-                subject=None,
-                resolver_name=self.name,
-                metadata={"error": "PyJWT not installed"},
-            )
         except jwt.DecodeError as e:
             logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
             return ResolverResult(
