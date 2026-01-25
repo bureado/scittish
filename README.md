@@ -42,16 +42,33 @@ Returns the certificate chain and SCITT ledger URL.
 
 ### Sign a payload
 
+Sign any file directly using `--data-binary`:
+
 ```bash
-curl -X POST http://localhost:8080/sign \
+# Sign a JSON file
+curl -X POST --data-binary '@artifact.json' \
   -H "Content-Type: application/json" \
-  -d '{"payload": {"name": "my-artifact", "version": "1.0.0"}, "subject": "product:myproduct:v1"}'
+  -H "X-Scittish-Subject: product:myproduct:v1" \
+  http://localhost:8080/sign
+
+# Sign a binary file (SBOM, firmware, etc.)
+curl -X POST --data-binary '@firmware.bin' \
+  -H "Content-Type: application/octet-stream" \
+  http://localhost:8080/sign
+
+# Sign by hash only (not yet implemented)
+curl -X POST \
+  -H "X-Scittish-Payload-Hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" \
+  http://localhost:8080/sign
 ```
 
-Request body:
-- `payload`: The JSON payload to sign (required unless `payload_hash` is provided)
-- `payload_hash`: SHA256 hash of the payload as a 64-character hex string (not yet implemented)
-- `subject`: Optional subject string used as the SCITT feed
+Request:
+- **Body**: Raw payload bytes (required unless `X-Scittish-Payload-Hash` is provided)
+- **Content-Type**: The content type of the payload (used in the signed statement)
+
+Request headers:
+- `X-Scittish-Subject`: Optional subject string used as the SCITT feed
+- `X-Scittish-Payload-Hash`: SHA256 hash of the payload (64-character hex string). If provided, body is ignored. (Not yet implemented)
 
 Response:
 ```json
