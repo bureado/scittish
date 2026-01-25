@@ -78,7 +78,7 @@ def get_certificate_chain() -> CertificateChain:
     return _certificate_chain
 
 
-def _get_payload_hash(payload: Optional[dict], payload_hash: Optional[str]) -> str:
+def _get_payload_hash(payload: Optional[bytes], payload_hash: Optional[str]) -> str:
     """
     Get or compute the SHA256 hash for the payload.
     Returns the hex-encoded hash string.
@@ -86,9 +86,7 @@ def _get_payload_hash(payload: Optional[dict], payload_hash: Optional[str]) -> s
     if payload_hash:
         return payload_hash.lower()
     if payload is not None:
-        # Canonical JSON serialization for consistent hashing
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return hashlib.sha256(payload).hexdigest()
     raise ValueError("Either payload or payload_hash must be provided")
 
 
@@ -135,14 +133,15 @@ def _get_issuer(root_cert_pem: str) -> str:
 
 
 def _sign_payload(
-    payload: Optional[dict], payload_hash: str, subject: Optional[str] = None
+    payload: Optional[bytes], payload_hash: str, content_type: str, subject: Optional[str] = None
 ) -> bytes:
     """
     Sign the payload using pyscitt.
     
     Args:
-        payload: The full payload dict (if provided)
+        payload: The raw payload bytes (if provided)
         payload_hash: The SHA256 hash of the payload
+        content_type: The content type of the payload
         subject: Optional subject string for the signed statement (used as feed)
     
     Returns:
@@ -171,13 +170,10 @@ def _sign_payload(
         x5c=[chain.leaf_cert_pem, chain.root_cert_pem],
     )
     
-    # Sign the statement
-    statement_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    
     signed_statement = sign_statement(
         signer=signer,
-        statement=statement_bytes,
-        content_type="application/json",
+        statement=payload,
+        content_type=content_type,
         feed=subject,  # Use subject as feed if provided
         cwt=True,  # Use CWT claims format
     )
@@ -235,10 +231,13 @@ def sign():
     """
     Sign a payload and return a SCITT transparent statement.
     
-    Request body (JSON):
-        - payload: The full JSON payload to sign (optional if payload_hash provided)
-        - payload_hash: SHA256 hash of the payload (optional if payload provided)
-        - subject: Optional subject string for the signed statement
+    Request:
+        - Body: Raw payload bytes (required unless X-Scittish-Payload-Hash is provided)
+        - Content-Type: The content type of the payload (default: application/octet-stream)
+    
+    Request headers:
+        - X-Scittish-Subject: Optional subject string for the signed statement
+        - X-Scittish-Payload-Hash: SHA256 hash of the payload (if provided, body is ignored)
     
     Response:
         - transparent_statement: The SCITT transparent statement (base64 encoded)
@@ -248,25 +247,26 @@ def sign():
     """
     logger.info(f"Received sign request from {request.remote_addr}")
     
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "Request body must be JSON"}), 400
-
-    payload = data.get("payload")
-    payload_hash = data.get("payload_hash")
-    subject = data.get("subject")  # Optional subject string
-
-    if payload is None and payload_hash is None:
-        return jsonify({"error": "Either 'payload' or 'payload_hash' must be provided"}), 400
-
+    # Get metadata from headers
+    subject = request.headers.get("X-Scittish-Subject")
+    payload_hash = request.headers.get("X-Scittish-Payload-Hash")
+    content_type = request.content_type or "application/octet-stream"
+    
+    # Get raw payload from body
+    payload = request.get_data() if not payload_hash else None
+    
+    # Validate: need either payload or payload_hash
+    if not payload and not payload_hash:
+        return jsonify({"error": "Either request body or X-Scittish-Payload-Hash header must be provided"}), 400
+    
     # Validate payload_hash format if provided
     if payload_hash:
-        if not isinstance(payload_hash, str) or len(payload_hash) != 64:
-            return jsonify({"error": "payload_hash must be a 64-character hex string (SHA256)"}), 400
+        if len(payload_hash) != 64:
+            return jsonify({"error": "X-Scittish-Payload-Hash must be a 64-character hex string (SHA256)"}), 400
         try:
             int(payload_hash, 16)
         except ValueError:
-            return jsonify({"error": "payload_hash must be a valid hex string"}), 400
+            return jsonify({"error": "X-Scittish-Payload-Hash must be a valid hex string"}), 400
 
     try:
         computed_hash = _get_payload_hash(payload, payload_hash)
@@ -284,7 +284,7 @@ def sign():
 
     # Sign the payload
     try:
-        signed_statement = _sign_payload(payload, computed_hash, subject)
+        signed_statement = _sign_payload(payload, computed_hash, content_type, subject)
     except NotImplementedError as e:
         return jsonify({"error": f"Not yet implemented: {e}"}), 501
     except Exception as e:
