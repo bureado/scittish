@@ -192,12 +192,6 @@ class BearerTokenResolver(SubjectResolver):
                 resolver_name=self.name,
                 metadata={"note": "JWT present but no identity claims found"},
             )
-            logger.debug(f"Bearer token resolver: no usable identity claims in token (claims: {list(claims.keys())})")
-            return ResolverResult(
-                subject=None,
-                resolver_name=self.name,
-                metadata={"note": "JWT present but no identity claims found"},
-            )
             
         except (jwt.DecodeError, jwt.InvalidTokenError) as e:
             logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
