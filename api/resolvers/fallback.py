@@ -130,13 +130,25 @@ class BearerTokenResolver(SubjectResolver):
         try:
             # Decode WITHOUT verification - we only need claims for subject resolution
             # This is safe because we're not using this for authn/authz
-            # We allow asymmetric algorithms (RS*, ES*, PS*) only to avoid HMAC key confusion
-            # HMAC algorithms are excluded as they could be vulnerable to key confusion attacks
+            # Note: When verify_signature=False, PyJWT ignores the algorithms parameter
+            # We decode first, then check the algorithm header to reject HMAC tokens
             claims = jwt.decode(
                 token, 
                 options={"verify_signature": False},
                 algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
             )
+            
+            # Explicitly check for and reject HMAC algorithms to avoid key confusion attacks
+            # Even though we don't verify signatures, we want to avoid processing HMAC tokens
+            header = jwt.get_unverified_header(token)
+            alg = header.get("alg", "").upper()
+            if alg.startswith("HS"):
+                logger.debug("Bearer token resolver: rejecting HMAC-signed token")
+                return ResolverResult(
+                    subject=None,
+                    resolver_name=self.name,
+                    metadata={"error": "HMAC tokens not supported"},
+                )
             
             # Try to extract identity claims in priority order
             # Inspired by sigstore/cosign's certificate extensions mapping
@@ -187,26 +199,26 @@ class BearerTokenResolver(SubjectResolver):
                     )
             
             # Token decoded but no useful claims found
-            logger.debug(f"Bearer token resolver: no usable identity claims in token ({len(claims)} claims present)")
+            logger.debug("Bearer token resolver: no usable identity claims in token")
             return ResolverResult(
                 subject=None,
                 resolver_name=self.name,
                 metadata={"note": "JWT present but no identity claims found"},
             )
             
-        except jwt.DecodeError as e:
-            logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
+        except jwt.DecodeError:
+            logger.debug("Bearer token resolver: invalid JWT token")
             return ResolverResult(
                 subject=None,
                 resolver_name=self.name,
-                metadata={"error": f"Invalid JWT: {str(e)}"},
+                metadata={"error": "Invalid JWT token"},
             )
-        except Exception as e:
-            logger.warning(f"Bearer token resolver: unexpected error - {e}")
+        except Exception:
+            logger.warning("Bearer token resolver: unexpected error")
             return ResolverResult(
                 subject=None,
                 resolver_name=self.name,
-                metadata={"error": f"Unexpected error: {str(e)}"},
+                metadata={"error": "Unexpected error"},
             )
 
 
