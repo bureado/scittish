@@ -11,12 +11,15 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, url_for
 
 from certs import (
     CertificateChain,
@@ -42,6 +45,7 @@ app = Flask(__name__)
 # Configuration
 CACHE_DIR = Path(os.environ.get("SCITT_CACHE_DIR", "/var/cache/scittish"))
 CERTS_DIR = Path(os.environ.get("SCITT_CERTS_DIR", "/var/lib/scittish/certs"))
+JOBS_DIR = Path(os.environ.get("SCITT_JOBS_DIR", "/var/cache/scittish/jobs"))
 SCITT_URL = os.environ.get("SCITT_URL", "https://localhost:8000")
 MAA_ENDPOINT = os.environ.get("MAA_ENDPOINT", "sharedeus.eus.attest.azure.net")
 ATTEST_HELPER_PATH = os.environ.get("ATTEST_HELPER_PATH", "/app/attest-helper")
@@ -52,6 +56,27 @@ _token_cache: dict[str, Tuple[str, float]] = {}
 
 # Global certificate chain (initialized on startup)
 _certificate_chain: Optional[CertificateChain] = None
+
+# Thread pool for async signing
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+class JobStatus(str, Enum):
+    """Status of a signing job."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class JobInfo:
+    """Information about a signing job."""
+    job_id: str
+    status: JobStatus
+    error: Optional[str] = None
+    created_at: float = 0.0
+    updated_at: float = 0.0
 
 
 def initialize_certificate_chain() -> CertificateChain:
@@ -126,6 +151,141 @@ def _store_receipt(cache_key: str, receipt: bytes) -> None:
     cache_path = _get_cache_path(cache_key)
     cache_path.write_bytes(receipt)
     logger.info(f"Stored receipt in cache for cache key {cache_key[:16]}...")
+
+
+# --- Job management functions ---
+
+def _get_job_path(job_id: str) -> Path:
+    """Get the filesystem path for a job status file."""
+    return JOBS_DIR / f"{job_id}.job"
+
+
+def _get_job_payload_path(job_id: str) -> Path:
+    """Get the filesystem path for a job's payload."""
+    return JOBS_DIR / f"{job_id}.payload"
+
+
+def _get_job(job_id: str) -> Optional[JobInfo]:
+    """Retrieve job info if it exists."""
+    job_path = _get_job_path(job_id)
+    if not job_path.exists():
+        return None
+    try:
+        data = json.loads(job_path.read_text())
+        return JobInfo(
+            job_id=data["job_id"],
+            status=JobStatus(data["status"]),
+            error=data.get("error"),
+            created_at=data.get("created_at", 0.0),
+            updated_at=data.get("updated_at", 0.0),
+        )
+    except Exception as e:
+        logger.error(f"Failed to load job {job_id}: {e}")
+        return None
+
+
+def _save_job(job: JobInfo) -> None:
+    """Save job info to filesystem."""
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    job_path = _get_job_path(job.job_id)
+    job.updated_at = time.time()
+    data = {
+        "job_id": job.job_id,
+        "status": job.status.value,
+        "error": job.error,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+    job_path.write_text(json.dumps(data))
+
+
+def _save_job_payload(job_id: str, payload: bytes, content_type: str, subject: Optional[str]) -> None:
+    """Save job payload and metadata for background processing."""
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    payload_path = _get_job_payload_path(job_id)
+    metadata = {
+        "content_type": content_type,
+        "subject": subject,
+    }
+    # Store as JSON with base64-encoded payload
+    data = {
+        "metadata": metadata,
+        "payload": base64.b64encode(payload).decode("utf-8"),
+    }
+    payload_path.write_text(json.dumps(data))
+
+
+def _load_job_payload(job_id: str) -> Optional[Tuple[bytes, str, Optional[str]]]:
+    """Load job payload and metadata. Returns (payload, content_type, subject) or None."""
+    payload_path = _get_job_payload_path(job_id)
+    if not payload_path.exists():
+        return None
+    try:
+        data = json.loads(payload_path.read_text())
+        payload = base64.b64decode(data["payload"])
+        metadata = data["metadata"]
+        return payload, metadata["content_type"], metadata.get("subject")
+    except Exception as e:
+        logger.error(f"Failed to load payload for job {job_id}: {e}")
+        return None
+
+
+def _cleanup_job_payload(job_id: str) -> None:
+    """Remove job payload file after processing."""
+    payload_path = _get_job_payload_path(job_id)
+    if payload_path.exists():
+        payload_path.unlink()
+
+
+def _process_signing_job(job_id: str) -> None:
+    """Background worker function to process a signing job."""
+    logger.info(f"Processing job {job_id[:16]}...")
+    
+    # Update status to processing
+    job = _get_job(job_id)
+    if job is None:
+        logger.error(f"Job {job_id[:16]}... not found")
+        return
+    
+    job.status = JobStatus.PROCESSING
+    _save_job(job)
+    
+    # Load payload
+    payload_data = _load_job_payload(job_id)
+    if payload_data is None:
+        job.status = JobStatus.FAILED
+        job.error = "Payload not found"
+        _save_job(job)
+        return
+    
+    payload, content_type, subject = payload_data
+    payload_hash = hashlib.sha256(payload).hexdigest()
+    
+    try:
+        # Sign the payload
+        signed_statement = _sign_payload(payload, payload_hash, content_type, subject)
+        
+        # Submit to SCITT ledger
+        transparent_statement = _submit_statement(signed_statement)
+        
+        # Store in cache (job_id is the cache key)
+        _store_receipt(job_id, transparent_statement)
+        
+        # Mark job as completed
+        job.status = JobStatus.COMPLETED
+        _save_job(job)
+        
+        # Clean up payload file
+        _cleanup_job_payload(job_id)
+        
+        logger.info(f"Job {job_id[:16]}... completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Job {job_id[:16]}... failed: {e}")
+        job.status = JobStatus.FAILED
+        job.error = str(e)
+        _save_job(job)
+        _cleanup_job_payload(job_id)
 
 
 def _get_issuer(root_cert_pem: str) -> str:
@@ -245,7 +405,7 @@ def properties():
 @app.route("/sign", methods=["POST"])
 def sign():
     """
-    Sign a payload and return a SCITT transparent statement (raw COSE bytes).
+    Submit a payload for signing. Returns a job ID for polling.
     
     Request:
         - Body: Raw payload bytes (required unless X-Scittish-Payload-Hash is provided)
@@ -255,11 +415,16 @@ def sign():
         - X-Scittish-Subject: Optional subject string for the signed statement
         - X-Scittish-Payload-Hash: SHA256 hash of the payload (if provided, body is ignored)
     
-    Response:
+    Response (202 Accepted):
+        - job_id: The job ID for polling
+        - status: "pending"
+    
+    Response (200 OK - if already cached):
         - Raw COSE bytes (application/cose)
     
     Response headers:
-        - X-Scittish-Cache-Hit: "true" if served from cache, "false" otherwise
+        - Location: URL to poll for job status (on 202)
+        - X-Scittish-Cache-Hit: "true" if served from cache
     """
     logger.info(f"Received sign request from {request.remote_addr}")
     
@@ -291,38 +456,118 @@ def sign():
 
     logger.info(f"Processing payload with hash {computed_hash[:16]}..., subject={subject}")
 
-    # Compute cache key from payload hash and subject
-    cache_key = _get_cache_key(computed_hash, subject)
+    # Compute cache key from payload hash and subject (this becomes the job_id)
+    job_id = _get_cache_key(computed_hash, subject)
 
-    # Check cache first
-    cached_receipt = _get_cached_receipt(cache_key)
+    # Check cache first - if we have a receipt, return it immediately
+    cached_receipt = _get_cached_receipt(job_id)
     if cached_receipt is not None:
         response = app.response_class(cached_receipt, mimetype="application/cose")
         response.headers["X-Scittish-Cache-Hit"] = "true"
         return response
 
-    # Sign the payload
-    try:
-        signed_statement = _sign_payload(payload, computed_hash, content_type, subject)
-    except NotImplementedError as e:
-        return jsonify({"error": f"Not yet implemented: {e}"}), 501
-    except Exception as e:
-        logger.error(f"Signing failed: {e}")
-        return jsonify({"error": f"Signing failed: {e}"}), 500
+    # Check if job already exists
+    existing_job = _get_job(job_id)
+    if existing_job is not None:
+        # Job exists - return its current status
+        if existing_job.status == JobStatus.COMPLETED:
+            # Job completed, receipt should be in cache
+            receipt = _get_cached_receipt(job_id)
+            if receipt:
+                response = app.response_class(receipt, mimetype="application/cose")
+                response.headers["X-Scittish-Cache-Hit"] = "true"
+                return response
+        
+        # Return job status (pending, processing, or failed)
+        response = jsonify({
+            "job_id": job_id,
+            "status": existing_job.status.value,
+            "error": existing_job.error,
+        })
+        response.status_code = 202 if existing_job.status in (JobStatus.PENDING, JobStatus.PROCESSING) else 200
+        response.headers["Location"] = url_for("get_sign_job", job_id=job_id, _external=True)
+        return response
 
-    # Submit to SCITT ledger
-    try:
-        transparent_statement = _submit_statement(signed_statement)
-    except Exception as e:
-        logger.error(f"Submission failed: {e}")
-        return jsonify({"error": f"Submission to SCITT ledger failed: {e}"}), 502
+    # Validate we have the payload for hash-only mode
+    if payload_hash and not payload:
+        return jsonify({"error": "Not yet implemented: Signing by hash only is not supported"}), 501
 
-    # Cache the transparent statement
-    _store_receipt(cache_key, transparent_statement)
+    # Create new job
+    job = JobInfo(
+        job_id=job_id,
+        status=JobStatus.PENDING,
+        created_at=time.time(),
+        updated_at=time.time(),
+    )
+    _save_job(job)
+    
+    # Save payload for background processing
+    _save_job_payload(job_id, payload, content_type, subject)
+    
+    # Submit to thread pool
+    _executor.submit(_process_signing_job, job_id)
+    
+    logger.info(f"Created job {job_id[:16]}... for signing")
 
-    response = app.response_class(transparent_statement, mimetype="application/cose")
-    response.headers["X-Scittish-Cache-Hit"] = "false"
+    response = jsonify({
+        "job_id": job_id,
+        "status": "pending",
+    })
+    response.status_code = 202
+    response.headers["Location"] = url_for("get_sign_job", job_id=job_id, _external=True)
     return response
+
+
+@app.route("/sign/<job_id>", methods=["GET"])
+def get_sign_job(job_id: str):
+    """
+    Poll for the status of a signing job.
+    
+    Response (200 OK - completed):
+        - Raw COSE bytes (application/cose)
+    
+    Response (202 Accepted - still processing):
+        - job_id: The job ID
+        - status: "pending" or "processing"
+    
+    Response (200 OK - failed):
+        - job_id: The job ID
+        - status: "failed"
+        - error: Error message
+    
+    Response (404 Not Found):
+        - error: "Job not found"
+    """
+    logger.info(f"Polling job {job_id[:16]}... from {request.remote_addr}")
+    
+    # Check cache first - completed jobs have their receipt cached
+    cached_receipt = _get_cached_receipt(job_id)
+    if cached_receipt is not None:
+        response = app.response_class(cached_receipt, mimetype="application/cose")
+        response.headers["X-Scittish-Cache-Hit"] = "true"
+        return response
+    
+    # Check job status
+    job = _get_job(job_id)
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    
+    if job.status == JobStatus.COMPLETED:
+        # Job completed but receipt not found (shouldn't happen)
+        return jsonify({"error": "Job completed but receipt not found"}), 500
+    
+    if job.status == JobStatus.FAILED:
+        return jsonify({
+            "job_id": job_id,
+            "status": "failed",
+            "error": job.error,
+        }), 200
+    
+    # Job still in progress
+    return jsonify({
+        "job_id": job_id,
+        "status": job.status.value,
+    }), 202
 
 
 def _sign_nonce_with_key(nonce: bytes) -> bytes:
