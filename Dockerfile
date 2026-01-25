@@ -3,13 +3,17 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install pyscitt dependencies first (these are heavier)
-# pyjwt is needed because pyscitt.crypto imports jwt at module level
+# These match pyscitt's setup.py requirements
 RUN pip install --no-cache-dir \
+    ccf==6.* \
     cryptography==44.* \
     httpx \
     cbor2==5.8.* \
     pycose==1.1.0 \
     pyjwt \
+    jwcrypto==1.5.* \
+    azure-identity \
+    azure-confidentialledger==1.* \
     loguru
 
 # Copy pyscitt module

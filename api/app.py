@@ -12,8 +12,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes
 from flask import Flask, jsonify, request
 
 from certs import (
@@ -23,8 +21,9 @@ from certs import (
     save_certificate_chain,
 )
 
-# pyscitt imports for signing
+# pyscitt imports for signing and submission
 from pyscitt.crypto import Signer, sign_statement
+from pyscitt.client import Client
 
 # Configure logging
 logging.basicConfig(
@@ -115,22 +114,24 @@ def _store_receipt(payload_hash: str, receipt: bytes) -> None:
     logger.info(f"Stored receipt in cache for payload hash {payload_hash[:16]}...")
 
 
-def _get_did_x509_issuer(leaf_cert_pem: str, root_cert_pem: str) -> str:
+def _get_issuer(root_cert_pem: str) -> str:
     """
-    Compute the did:x509 issuer string from the certificate chain.
+    Compute the did:x509 issuer string from the root certificate.
     
-    Format: did:x509:0:sha256:<root_fingerprint_b64url>::san:dns:<leaf_cn>
-    
-    The root fingerprint is the SHA256 hash of the root certificate,
-    base64url encoded without padding.
+    Format: did:x509:0:sha256:<root_fingerprint_b64url>::eku:<eku_oid>
     """
-    # Get root cert fingerprint (base64url encoded, no padding)
-    root_cert = x509.load_pem_x509_certificate(root_cert_pem.encode("ascii"))
+    from cryptography import x509 as crypto_x509
+    from cryptography.hazmat.primitives import hashes as crypto_hashes
+    
+    root_cert = crypto_x509.load_pem_x509_certificate(root_cert_pem.encode("ascii"))
     root_fingerprint = base64.urlsafe_b64encode(
-        root_cert.fingerprint(hashes.SHA256())
+        root_cert.fingerprint(crypto_hashes.SHA256())
     ).decode("ascii").rstrip("=")
     
-    return f"did:x509:0:sha256:{root_fingerprint}::san:dns:scittish.local"
+    # EKU OID for SCITT
+    eku = "1.3.6.1.5.5.7.3.36"
+    
+    return f"did:x509:0:sha256:{root_fingerprint}::eku:{eku}"
 
 
 def _sign_payload(
@@ -159,8 +160,8 @@ def _sign_payload(
     
     chain = get_certificate_chain()
     
-    # Compute did:x509 issuer
-    issuer = _get_did_x509_issuer(chain.leaf_cert_pem, chain.root_cert_pem)
+    # Compute issuer from root cert
+    issuer = _get_issuer(chain.root_cert_pem)
     
     # Create signer with x5c chain (leaf first, then root)
     signer = Signer(
@@ -188,17 +189,23 @@ def _sign_payload(
 
 def _submit_statement(signed_statement: bytes) -> bytes:
     """
-    Submit a signed statement to the SCITT ledger and get a receipt.
+    Submit a signed statement to the SCITT ledger and get a transparent statement.
     
-    STUB: This will be implemented to use pyscitt's submit functionality.
+    Args:
+        signed_statement: The signed COSE statement bytes
+    
+    Returns:
+        The transparent statement (signed statement with embedded receipt) bytes.
     """
-    logger.info(f"Submitting signed statement to SCITT ledger ({len(signed_statement)} bytes)...")
-    # TODO: Implement using pyscitt.client.Client
-    # client = Client(url=SCITT_URL, ...)
-    # submission = client.submit_signed_statement_and_wait_for_receipt(signed_statement)
-    # logger.info(f"Received receipt from SCITT ledger")
-    # return submission.receipt
-    raise NotImplementedError("submit_statement stub - implement with pyscitt")
+    logger.info(f"Submitting signed statement to SCITT ledger at {SCITT_URL} ({len(signed_statement)} bytes)...")
+    
+    client = Client(url=SCITT_URL, development=True)
+    
+    submission = client.submit_signed_statement_and_wait(signed_statement)
+    
+    logger.info(f"Received transparent statement from SCITT ledger (tx={submission.tx})")
+    
+    return submission.response_bytes
 
 
 @app.route("/health", methods=["GET"])
@@ -226,7 +233,7 @@ def properties():
 @app.route("/sign", methods=["POST"])
 def sign():
     """
-    Sign a payload and return a SCITT receipt.
+    Sign a payload and return a SCITT transparent statement.
     
     Request body (JSON):
         - payload: The full JSON payload to sign (optional if payload_hash provided)
@@ -234,8 +241,7 @@ def sign():
         - subject: Optional subject string for the signed statement
     
     Response:
-        - signed_statement: The signed COSE statement (base64 encoded)
-        - receipt: The SCITT receipt (base64 encoded) - when submission is implemented
+        - transparent_statement: The SCITT transparent statement (base64 encoded)
     
     Response headers:
         - X-Scittish-Cache-Hit: "true" if served from cache, "false" otherwise
@@ -272,7 +278,7 @@ def sign():
     # Check cache first
     cached_receipt = _get_cached_receipt(computed_hash)
     if cached_receipt is not None:
-        response = jsonify({"signed_statement": base64.b64encode(cached_receipt).decode("utf-8")})
+        response = jsonify({"transparent_statement": base64.b64encode(cached_receipt).decode("utf-8")})
         response.headers["X-Scittish-Cache-Hit"] = "true"
         return response
 
@@ -285,12 +291,17 @@ def sign():
         logger.error(f"Signing failed: {e}")
         return jsonify({"error": f"Signing failed: {e}"}), 500
 
-    # Cache the signed statement (will be replaced with receipt when submission is implemented)
-    _store_receipt(computed_hash, signed_statement)
+    # Submit to SCITT ledger
+    try:
+        transparent_statement = _submit_statement(signed_statement)
+    except Exception as e:
+        logger.error(f"Submission failed: {e}")
+        return jsonify({"error": f"Submission to SCITT ledger failed: {e}"}), 502
 
-    # TODO: Submit to SCITT ledger and return receipt instead
-    # For now, return the signed statement directly for testing
-    response = jsonify({"signed_statement": base64.b64encode(signed_statement).decode("utf-8")})
+    # Cache the transparent statement
+    _store_receipt(computed_hash, transparent_statement)
+
+    response = jsonify({"transparent_statement": base64.b64encode(transparent_statement).decode("utf-8")})
     response.headers["X-Scittish-Cache-Hit"] = "false"
     return response
 

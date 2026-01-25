@@ -47,12 +47,13 @@ def generate_root_cert(private_key: ec.EllipticCurvePrivateKey) -> x509.Certific
         x509.NameAttribute(NameOID.COMMON_NAME, "Scittish Root CA"),
     ])
     
+    public_key = private_key.public_key()
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer)
-        .public_key(private_key.public_key())
+        .public_key(public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + datetime.timedelta(days=3650))  # 10 years
@@ -74,6 +75,14 @@ def generate_root_cert(private_key: ec.EllipticCurvePrivateKey) -> x509.Certific
             ),
             critical=True,
         )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(public_key),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(public_key),
+            critical=False,
+        )
         .sign(private_key, hashes.SHA256())
     )
     return cert
@@ -91,12 +100,13 @@ def generate_leaf_cert(
         x509.NameAttribute(NameOID.COMMON_NAME, "Scittish Signing Key"),
     ])
     
+    leaf_public_key = leaf_private_key.public_key()
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer_cert.subject)
-        .public_key(leaf_private_key.public_key())
+        .public_key(leaf_public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + datetime.timedelta(days=365))  # 1 year
@@ -117,6 +127,18 @@ def generate_leaf_cert(
                 decipher_only=False,
             ),
             critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(leaf_public_key),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_private_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.ObjectIdentifier("1.3.6.1.5.5.7.3.36")]),
+            critical=False,
         )
         .sign(issuer_private_key, hashes.SHA256())
     )
