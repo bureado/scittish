@@ -98,9 +98,15 @@ class BearerTokenResolver(SubjectResolver):
         
         Attempts to extract claims in the following priority order:
         1. 'sub' (subject) - standard OIDC claim
-        2. 'oid' (object ID) - Azure AD claim
-        3. 'preferred_username' - OIDC claim
-        4. 'email' - common claim
+        2. 'repository' - GitHub Actions repository claim (e.g., "owner/repo")
+        3. 'job_workflow_ref' - GitHub Actions reusable workflow ref
+        4. 'workflow_ref' - GitHub Actions workflow ref
+        5. 'oid' (object ID) - Azure AD claim
+        6. 'preferred_username' - OIDC claim
+        7. 'email' - common claim
+        
+        For GitHub Actions tokens, also captures additional metadata like
+        workflow_sha, event_name, actor, etc. for use in indexing.
         
         Returns a subject in the format: jwt:<claim_type>:<claim_value>
         """
@@ -124,19 +130,24 @@ class BearerTokenResolver(SubjectResolver):
         try:
             # Decode WITHOUT verification - we only need claims for subject resolution
             # This is safe because we're not using this for authn/authz
-            # We allow common algorithms even though we're not verifying signatures
+            # We allow common algorithms (excluding 'none' for security)
             claims = jwt.decode(
                 token, 
                 options={"verify_signature": False},
-                algorithms=["HS256", "RS256", "ES256", "PS256", "none"]
+                algorithms=["HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
             )
             
             # Try to extract identity claims in priority order
+            # Inspired by sigstore/cosign's certificate extensions mapping
+            # See: https://github.com/sigstore/cosign/blob/main/pkg/cosign/certextensions.go
             claim_priority = [
-                ("sub", "subject"),
-                ("oid", "object-id"),
-                ("preferred_username", "username"),
-                ("email", "email"),
+                ("sub", "subject"),                      # Standard OIDC subject claim
+                ("repository", "repository"),             # GitHub Actions: owner/repo
+                ("job_workflow_ref", "job-workflow"),    # GitHub Actions: reusable workflow ref
+                ("workflow_ref", "workflow"),             # GitHub Actions: workflow file ref
+                ("oid", "object-id"),                     # Azure AD object ID
+                ("preferred_username", "username"),       # OIDC preferred username
+                ("email", "email"),                       # Email claim
             ]
             
             for claim_name, claim_type in claim_priority:
@@ -145,15 +156,32 @@ class BearerTokenResolver(SubjectResolver):
                     subject = f"jwt:{claim_type}:{claim_value}"
                     logger.info(f"Bearer token resolver: extracted {claim_name} claim")
                     
+                    # Build metadata - capture GitHub Actions-specific claims if present
+                    metadata = {
+                        "source": "JWT bearer token",
+                        "claim_type": claim_name,
+                        "issuer": claims.get("iss", "unknown"),
+                    }
+                    
+                    # Add GitHub Actions workflow metadata if available (for indexing hints)
+                    if "repository" in claims:
+                        metadata["gh_repository"] = claims["repository"]
+                    if "workflow" in claims:
+                        metadata["gh_workflow"] = claims["workflow"]
+                    if "event_name" in claims:
+                        metadata["gh_event"] = claims["event_name"]
+                    if "actor" in claims:
+                        metadata["gh_actor"] = claims["actor"]
+                    if "run_id" in claims:
+                        metadata["gh_run_id"] = claims["run_id"]
+                    if "sha" in claims:
+                        metadata["gh_sha"] = claims["sha"]
+                    
                     return ResolverResult(
                         subject=subject,
                         resolver_name=self.name,
                         confidence=0.8,
-                        metadata={
-                            "source": "JWT bearer token",
-                            "claim_type": claim_name,
-                            "issuer": claims.get("iss", "unknown"),
-                        },
+                        metadata=metadata,
                         indexable=True,
                     )
             
@@ -164,33 +192,27 @@ class BearerTokenResolver(SubjectResolver):
                 resolver_name=self.name,
                 metadata={"note": "JWT present but no identity claims found"},
             )
-            
-        except AttributeError as e:
-            # This can happen if jwt is None despite our check
-            logger.warning(f"Bearer token resolver: PyJWT error - {e}")
+            logger.debug(f"Bearer token resolver: no usable identity claims in token (claims: {list(claims.keys())})")
             return ResolverResult(
                 subject=None,
                 resolver_name=self.name,
-                metadata={"error": "PyJWT error"},
+                metadata={"note": "JWT present but no identity claims found"},
+            )
+            
+        except (jwt.DecodeError, jwt.InvalidTokenError) as e:
+            logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"error": f"Invalid JWT: {str(e)}"},
             )
         except Exception as e:
-            # Catch all JWT exceptions (DecodeError, InvalidTokenError, etc.)
-            # Use string matching to differentiate error types
-            error_str = str(type(e).__name__)
-            if "Decode" in error_str or "Invalid" in error_str:
-                logger.debug(f"Bearer token resolver: invalid JWT token - {e}")
-                return ResolverResult(
-                    subject=None,
-                    resolver_name=self.name,
-                    metadata={"error": f"Invalid JWT: {str(e)}"},
-                )
-            else:
-                logger.warning(f"Bearer token resolver: unexpected error - {e}")
-                return ResolverResult(
-                    subject=None,
-                    resolver_name=self.name,
-                    metadata={"error": f"Unexpected error: {str(e)}"},
-                )
+            logger.warning(f"Bearer token resolver: unexpected error - {e}")
+            return ResolverResult(
+                subject=None,
+                resolver_name=self.name,
+                metadata={"error": f"Unexpected error: {str(e)}"},
+            )
 
 
 class HashFallbackResolver(SubjectResolver):
