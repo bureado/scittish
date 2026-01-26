@@ -133,25 +133,8 @@ class OciIndexer(Indexer):
             tmp_dir = tempfile.mkdtemp(prefix="scittish-oci-")
             
             try:
-                # Step 1: Push subject artifact (text file with subject string)
-                subject_file = os.path.join(tmp_dir, "subject.txt")
-                with open(subject_file, 'w') as f:
-                    f.write(context.subject)
-                
-                success, stdout, stderr = self._run_oras([
-                    "push", subject_ref,
-                    "subject.txt:text/plain",
-                    "--annotation", f"scittish.subject={context.subject}",
-                ], cwd=tmp_dir)
-                
-                if not success:
-                    # Check if it already exists (that's ok)
-                    if "exists" not in stderr.lower():
-                        logger.warning(f"Failed to push subject artifact: {stderr}")
-                else:
-                    logger.info(f"Pushed subject artifact: {subject_ref}")
-                
-                # Get subject digest
+                # Step 1: Ensure subject artifact exists
+                # First, check if subject already exists by fetching its manifest
                 success, stdout, stderr = self._run_oras([
                     "manifest", "fetch", subject_ref, "--descriptor",
                 ], cwd=tmp_dir)
@@ -162,8 +145,44 @@ class OciIndexer(Indexer):
                     try:
                         desc = json.loads(stdout)
                         subject_digest = desc.get("digest")
+                        logger.info(f"Subject artifact already exists: {subject_ref}")
                     except json.JSONDecodeError:
                         pass
+                
+                # If subject doesn't exist, create it
+                if not subject_digest:
+                    subject_file = os.path.join(tmp_dir, "subject.txt")
+                    with open(subject_file, 'w') as f:
+                        f.write(context.subject)
+                    
+                    success, stdout, stderr = self._run_oras([
+                        "push", subject_ref,
+                        "subject.txt:text/plain",
+                        "--annotation", f"scittish.subject={context.subject}",
+                    ], cwd=tmp_dir)
+                    
+                    if not success:
+                        logger.error(f"Failed to push subject artifact: {stderr}")
+                        return IndexerResult(
+                            success=False,
+                            indexer_name=self.name,
+                            error=f"Failed to push subject artifact: {stderr}",
+                        )
+                    
+                    logger.info(f"Pushed subject artifact: {subject_ref}")
+                    
+                    # Get the digest of the newly pushed subject
+                    success, stdout, stderr = self._run_oras([
+                        "manifest", "fetch", subject_ref, "--descriptor",
+                    ], cwd=tmp_dir)
+                    
+                    if success:
+                        import json
+                        try:
+                            desc = json.loads(stdout)
+                            subject_digest = desc.get("digest")
+                        except json.JSONDecodeError:
+                            pass
                 
                 if not subject_digest:
                     return IndexerResult(
