@@ -20,14 +20,9 @@ jobs:
         python-version: '3.10'
     
     - name: Install oras CLI
-      run: |
-        VERSION="1.1.0"
-        curl -LO "https://github.com/oras-project/oras/releases/download/v${VERSION}/oras_${VERSION}_linux_amd64.tar.gz"
-        mkdir -p oras-install/
-        tar -zxf oras_${VERSION}_*.tar.gz -C oras-install/
-        sudo mv oras-install/oras /usr/local/bin/
-        rm -rf oras_${VERSION}_*.tar.gz oras-install/
-        oras version
+      uses: oras-project/setup-oras@v1
+      with:
+        version: 1.1.0
     
     - name: Checkout SCITT CCF Ledger
       uses: actions/checkout@v4
@@ -45,12 +40,13 @@ jobs:
       working-directory: scitt-ccf-ledger
       run: |
         export PLATFORM=virtual
-        # The run-dev.sh script ends with "docker logs -f" which blocks
-        # We'll run the script in background and let it timeout after setup completes
+        # The run-dev.sh script ends with "docker logs -f" which blocks indefinitely
+        # We use timeout to let the script complete setup then exit when it reaches the blocking logs command
+        # 180 seconds is sufficient for building the dev environment and starting the container
         timeout 180 ./docker/run-dev.sh || [ $? -eq 124 ]
         
         # At this point, the ledger should be running in a container
-        # Wait for ledger to be ready (retry for up to 60 seconds)
+        # Wait for ledger to be ready (60 seconds should be enough for virtual mode)
         echo "Verifying SCITT ledger is ready..."
         for i in {1..60}; do
           if curl -s -k https://localhost:8000/node/network >/dev/null 2>&1; then
@@ -69,7 +65,7 @@ jobs:
       run: |
         docker run -d -p 5000:5000 --name registry registry:2
         
-        # Wait for registry to be ready
+        # Wait for registry to be ready (30 seconds is typical for registry startup)
         echo "Waiting for OCI registry to be ready..."
         for i in {1..30}; do
           if curl -s http://localhost:5000/v2/ >/dev/null 2>&1; then

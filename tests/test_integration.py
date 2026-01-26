@@ -19,7 +19,8 @@ class TestSCITTLedgerIntegration:
     def test_scitt_ledger_is_available(self):
         """Should be able to connect to SCITT ledger."""
         try:
-            # SCITT ledger uses HTTPS with self-signed cert, so disable verification
+            # SCITT ledger uses HTTPS with self-signed cert in development
+            # verify=False is acceptable for integration tests against local dev environment
             response = httpx.get("https://localhost:8000/node/network", timeout=5.0, verify=False)
             # SCITT ledger should respond (any status is fine, just checking connectivity)
             assert response.status_code in [200, 404, 405]  # Common responses
