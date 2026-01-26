@@ -52,7 +52,7 @@ class OciIndexer(Indexer):
     
     Configuration via environment:
         OCI_REGISTRY: Registry hostname:port (default: empty = disabled)
-        OCI_NAMESPACE: Repository namespace (default: scittish/subjects)
+        OCI_NAMESPACE: Repository namespace (default: scittish)
         OCI_USERNAME: Registry username (optional)
         OCI_PASSWORD: Registry password (optional)
         OCI_INSECURE: Allow HTTP connections (default: false)
@@ -61,7 +61,7 @@ class OciIndexer(Indexer):
     
     def __init__(self):
         self._registry = os.environ.get("OCI_REGISTRY", "")
-        self._namespace = os.environ.get("OCI_NAMESPACE", "scittish/subjects")
+        self._namespace = os.environ.get("OCI_NAMESPACE", "scittish")
         self._username = os.environ.get("OCI_USERNAME", "")
         self._password = os.environ.get("OCI_PASSWORD", "")
         self._insecure = os.environ.get("OCI_INSECURE", "false").lower() == "true"
@@ -148,6 +148,8 @@ class OciIndexer(Indexer):
                     # Check if it already exists (that's ok)
                     if "exists" not in stderr.lower():
                         logger.warning(f"Failed to push subject artifact: {stderr}")
+                else:
+                    logger.info(f"Pushed subject artifact: {subject_ref}")
                 
                 # Get subject digest
                 success, stdout, stderr = self._run_oras([
@@ -192,7 +194,17 @@ class OciIndexer(Indexer):
                         error=f"Failed to attach receipt: {stderr}",
                     )
                 
-                logger.info(f"Indexed receipt to {subject_repo} as referrer")
+                # Parse receipt digest from oras attach output
+                receipt_ref = f"{subject_repo}@{subject_digest}"
+                if "Digest:" in stdout:
+                    for line in stdout.splitlines():
+                        if "Digest:" in line:
+                            receipt_digest = line.split("Digest:")[-1].strip()
+                            receipt_ref = f"{subject_repo}@{receipt_digest}"
+                            break
+                
+                logger.info(f"Attached receipt artifact: {receipt_ref}")
+                logger.info(f"Indexed receipt to {subject_repo} as referrer of {subject_ref}")
                 
                 return IndexerResult(
                     success=True,

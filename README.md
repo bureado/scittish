@@ -31,6 +31,7 @@ docker run -p 8080:8080 \
   -v scittish-certs:/var/lib/scittish/certs \
   -v scittish-cache:/var/cache/scittish \
   -e SCITT_URL=https://your-scitt-ledger:8000 \
+  -e ALLOW_FAKE_ATTESTATION=true \
   scittish:latest
 ```
 
@@ -46,7 +47,7 @@ This persists certificates and the receipt cache across container restarts. The 
 | `MAA_ENDPOINT` | `sharedeus.eus.attest.azure.net` | Microsoft Azure Attestation endpoint |
 | `ALLOW_FAKE_ATTESTATION` | `false` | Allow fake attestation reports for testing on non-SNP systems |
 | `OCI_REGISTRY` | (empty) | OCI registry for receipt indexing (e.g., `localhost:5000`) |
-| `OCI_NAMESPACE` | `scittish/subjects` | OCI namespace for receipt storage |
+| `OCI_NAMESPACE` | `scittish` | OCI namespace for receipt storage |
 | `OCI_USERNAME` | (empty) | OCI registry username |
 | `OCI_PASSWORD` | (empty) | OCI registry password |
 | `OCI_INSECURE` | `false` | Allow insecure (HTTP) OCI registry connections |
