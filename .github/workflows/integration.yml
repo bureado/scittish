@@ -1,0 +1,106 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Install oras CLI
+      uses: oras-project/setup-oras@v1
+      with:
+        version: 1.1.0
+    
+    - name: Checkout SCITT CCF Ledger
+      uses: actions/checkout@v4
+      with:
+        repository: microsoft/scitt-ccf-ledger
+        path: scitt-ccf-ledger
+    
+    - name: Build SCITT ledger
+      working-directory: scitt-ccf-ledger
+      run: |
+        export PLATFORM=virtual
+        ./docker/build.sh
+    
+    - name: Start SCITT ledger
+      working-directory: scitt-ccf-ledger
+      run: |
+        export PLATFORM=virtual
+        
+        # Comment out the blocking "docker logs -f" line at the end of run-dev.sh
+        # This prevents the script from blocking the workflow indefinitely
+        sed -i 's/^docker logs -f/# docker logs -f/' ./docker/run-dev.sh
+        
+        # Now run the script - it will complete after starting the container
+        ./docker/run-dev.sh
+        
+        # Wait for ledger to be ready (60 seconds should be enough for virtual mode)
+        echo "Verifying SCITT ledger is ready..."
+        for i in {1..60}; do
+          if curl -s -k https://localhost:8000/node/network >/dev/null 2>&1; then
+            echo "SCITT ledger is ready!"
+            break
+          fi
+          echo "Attempt $i: SCITT ledger not ready yet, waiting..."
+          sleep 1
+        done
+        
+        # Verify it's running and show the container status
+        docker ps | grep scitt || docker ps -a | grep scitt
+        curl -v -k https://localhost:8000/node/network || true
+    
+    - name: Start OCI registry
+      run: |
+        docker run -d -p 5000:5000 --name registry registry:2
+        
+        # Wait for registry to be ready (30 seconds is typical for registry startup)
+        echo "Waiting for OCI registry to be ready..."
+        for i in {1..30}; do
+          if curl -s http://localhost:5000/v2/ >/dev/null 2>&1; then
+            echo "OCI registry is ready!"
+            break
+          fi
+          echo "Attempt $i: OCI registry not ready yet, waiting..."
+          sleep 1
+        done
+        
+        # Verify it's running
+        curl -v http://localhost:5000/v2/
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r api/requirements.txt -r requirements-dev.txt
+    
+    - name: Run integration tests
+      run: |
+        pytest -m integration -v
+    
+    - name: Show ledger logs on failure
+      if: failure()
+      working-directory: scitt-ccf-ledger
+      run: |
+        docker ps -a
+        docker logs $(docker ps -a --filter "name=ccf" --format "{{.Names}}" | head -n 1) || true
+    
+    - name: Show registry logs on failure
+      if: failure()
+      run: |
+        docker logs registry || true
