@@ -45,6 +45,11 @@ This persists certificates and the receipt cache across container restarts. The 
 | `SCITT_URL` | `https://localhost:8000` | SCITT ledger URL |
 | `MAA_ENDPOINT` | `sharedeus.eus.attest.azure.net` | Microsoft Azure Attestation endpoint |
 | `ALLOW_FAKE_ATTESTATION` | `false` | Allow fake attestation reports for testing on non-SNP systems |
+| `OCI_REGISTRY` | (empty) | OCI registry for receipt indexing (e.g., `localhost:5000`) |
+| `OCI_NAMESPACE` | `scittish/subjects` | OCI namespace for receipt storage |
+| `OCI_USERNAME` | (empty) | OCI registry username |
+| `OCI_PASSWORD` | (empty) | OCI registry password |
+| `OCI_INSECURE` | `false` | Allow insecure (HTTP) OCI registry connections |
 
 ## API Usage
 
@@ -54,7 +59,23 @@ This persists certificates and the receipt cache across container restarts. The 
 curl http://localhost:8080/properties
 ```
 
-Returns the certificate chain and SCITT ledger URL.
+Returns the certificate chain and SCITT ledger URL, plus available subject resolvers and indexers.
+
+### Subject Resolution
+
+When signing, scittish determines the subject (used for SCITT feed and OCI indexing) using a resolver chain:
+
+1. **client-provided** (priority 0): Uses `X-Scittish-Subject` header if provided
+2. **spdx-sbom** (priority 100): Extracts `documentNamespace` from SPDX SBOM payloads
+3. **slsa-intoto** (priority 110): Extracts subject from SLSA/in-toto attestations
+4. **eku-fallback** (priority 200): Uses certificate EKU (stub)
+5. **bearer-token** (priority 210): Derives from Authorization token (stub)
+
+Example: An SPDX SBOM with `documentNamespace: "https://example.com/sbom/v1"` will automatically use that as the subject.
+
+### OCI Registry Indexing
+
+When `OCI_REGISTRY` is configured, receipts are pushed to the registry as OCI artifacts using ORAS. The subject is used to create a referrer relationship, allowing discovery of all receipts for a given subject via the OCI Referrers API.
 
 ### Sign a payload
 
