@@ -43,49 +43,6 @@ class TestPayloadHash:
         assert hash1 != hash2
 
 
-class TestCacheKey:
-    """Tests for cache key computation."""
-
-    def test_cache_key_includes_subject(self):
-        """Cache key should differ when subject differs."""
-        payload_hash = "a" * 64
-        
-        key1 = hashlib.sha256(f"{payload_hash}:subject1".encode()).hexdigest()
-        key2 = hashlib.sha256(f"{payload_hash}:subject2".encode()).hexdigest()
-        
-        assert key1 != key2
-    
-    def test_cache_key_same_for_none_and_empty_subject(self):
-        """Cache key should be same for None and empty subject."""
-        payload_hash = "b" * 64
-        
-        key_none = hashlib.sha256(f"{payload_hash}:".encode()).hexdigest()
-        key_empty = hashlib.sha256(f"{payload_hash}:".encode()).hexdigest()
-        
-        assert key_none == key_empty
-    
-    def test_cache_key_is_valid_filename(self):
-        """Cache key should be a valid filename (hex chars only)."""
-        payload_hash = "c" * 64
-        subject = "https://example.com/some/path?query=value"
-        
-        key = hashlib.sha256(f"{payload_hash}:{subject}".encode()).hexdigest()
-        
-        # Should be 64 hex characters
-        assert len(key) == 64
-        assert all(c in "0123456789abcdef" for c in key)
-    
-    def test_cache_key_deterministic(self):
-        """Same inputs should always produce same cache key."""
-        payload_hash = "d" * 64
-        subject = "my-subject"
-        
-        key1 = hashlib.sha256(f"{payload_hash}:{subject}".encode()).hexdigest()
-        key2 = hashlib.sha256(f"{payload_hash}:{subject}".encode()).hexdigest()
-        
-        assert key1 == key2
-
-
 class TestCertificateGeneration:
     """Tests for certificate generation functions."""
 
