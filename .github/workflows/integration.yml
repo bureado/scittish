@@ -43,12 +43,14 @@ jobs:
       working-directory: scitt-ccf-ledger
       run: |
         export PLATFORM=virtual
-        # The run-dev.sh script ends with "docker logs -f" which blocks indefinitely
-        # We use timeout to let the script complete setup then exit when it reaches the blocking logs command
-        # 180 seconds is sufficient for building the dev environment and starting the container
-        timeout 180 ./docker/run-dev.sh || [ $? -eq 124 ]
         
-        # At this point, the ledger should be running in a container
+        # Comment out the blocking "docker logs -f" line at the end of run-dev.sh
+        # This prevents the script from blocking the workflow indefinitely
+        sed -i 's/^docker logs -f/# docker logs -f/' ./docker/run-dev.sh
+        
+        # Now run the script - it will complete after starting the container
+        ./docker/run-dev.sh
+        
         # Wait for ledger to be ready (60 seconds should be enough for virtual mode)
         echo "Verifying SCITT ledger is ready..."
         for i in {1..60}; do
