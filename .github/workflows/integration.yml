@@ -45,14 +45,18 @@ jobs:
       working-directory: scitt-ccf-ledger
       run: |
         export PLATFORM=virtual
-        # Modify run-dev.sh to skip docker logs and run in background
-        # The script normally runs 'docker logs -f' which blocks
-        # We'll start the container and wait for it to be ready instead
-        ./docker/run-dev.sh &
+        # The run-dev.sh script typically ends with "docker logs -f" which blocks
+        # We need to modify it to not follow logs, or manually start the container
+        # Let's modify the script to remove the blocking logs command
+        sed -i 's/docker logs -f/docker logs/' ./docker/run-dev.sh || true
+        sed -i '/docker logs/d' ./docker/run-dev.sh || true
         
-        # Wait for ledger to be ready (retry for up to 60 seconds)
+        # Now run the script
+        ./docker/run-dev.sh
+        
+        # Wait for ledger to be ready (retry for up to 120 seconds)
         echo "Waiting for SCITT ledger to be ready..."
-        for i in {1..60}; do
+        for i in {1..120}; do
           if curl -s http://localhost:8000 >/dev/null 2>&1; then
             echo "SCITT ledger is ready!"
             break
