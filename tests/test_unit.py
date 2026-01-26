@@ -7,10 +7,14 @@ Run with: pytest tests/ -v
 
 import hashlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+# Add api directory to path for imports
+sys.path.insert(0, "api")
 
 
 class TestPayloadHash:
@@ -87,8 +91,6 @@ class TestCertificateGeneration:
 
     def test_generate_certificate_chain(self):
         """Should generate a valid certificate chain."""
-        import sys
-        sys.path.insert(0, "api")
         from certs import generate_certificate_chain
         
         chain = generate_certificate_chain()
@@ -106,8 +108,6 @@ class TestCertificateGeneration:
     
     def test_chain_pem_contains_both_certs(self):
         """Chain PEM should contain both leaf and root certificates."""
-        import sys
-        sys.path.insert(0, "api")
         from certs import generate_certificate_chain
         
         chain = generate_certificate_chain()
@@ -118,8 +118,6 @@ class TestCertificateGeneration:
     
     def test_save_and_load_certificate_chain(self):
         """Should be able to save and reload certificate chain."""
-        import sys
-        sys.path.insert(0, "api")
         from certs import generate_certificate_chain, save_certificate_chain, load_certificate_chain
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -139,8 +137,6 @@ class TestCertificateGeneration:
     
     def test_certificates_have_correct_extensions(self):
         """Certificates should have required extensions for SCITT."""
-        import sys
-        sys.path.insert(0, "api")
         from certs import generate_certificate_chain
         from cryptography import x509
         
@@ -158,8 +154,6 @@ class TestCertificateGeneration:
     
     def test_leaf_certificate_signed_by_root(self):
         """Leaf certificate should be signed by root CA."""
-        import sys
-        sys.path.insert(0, "api")
         from certs import generate_certificate_chain
         from cryptography import x509
         
@@ -177,9 +171,7 @@ class TestIssuerComputation:
 
     def test_issuer_format(self):
         """Issuer should follow did:x509 format."""
-        import sys
         import base64
-        sys.path.insert(0, "api")
         from certs import generate_certificate_chain
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes
