@@ -45,19 +45,15 @@ jobs:
       working-directory: scitt-ccf-ledger
       run: |
         export PLATFORM=virtual
-        # The run-dev.sh script typically ends with "docker logs -f" which blocks
-        # We need to modify it to not follow logs, or manually start the container
-        # Let's modify the script to remove the blocking logs command
-        sed -i 's/docker logs -f/docker logs/' ./docker/run-dev.sh || true
-        sed -i '/docker logs/d' ./docker/run-dev.sh || true
+        # The run-dev.sh script ends with "docker logs -f" which blocks
+        # We'll run the script in background and let it timeout after setup completes
+        timeout 180 ./docker/run-dev.sh || [ $? -eq 124 ]
         
-        # Now run the script
-        ./docker/run-dev.sh
-        
-        # Wait for ledger to be ready (retry for up to 120 seconds)
-        echo "Waiting for SCITT ledger to be ready..."
-        for i in {1..120}; do
-          if curl -s http://localhost:8000 >/dev/null 2>&1; then
+        # At this point, the ledger should be running in a container
+        # Wait for ledger to be ready (retry for up to 60 seconds)
+        echo "Verifying SCITT ledger is ready..."
+        for i in {1..60}; do
+          if curl -s -k https://localhost:8000/node/network >/dev/null 2>&1; then
             echo "SCITT ledger is ready!"
             break
           fi
@@ -65,8 +61,9 @@ jobs:
           sleep 1
         done
         
-        # Verify it's running
-        curl -v http://localhost:8000 || true
+        # Verify it's running and show the container status
+        docker ps | grep scitt || docker ps -a | grep scitt
+        curl -v -k https://localhost:8000/node/network || true
     
     - name: Start OCI registry
       run: |

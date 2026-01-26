@@ -2,7 +2,7 @@
 Integration tests requiring external services.
 
 These tests require:
-- A SCITT ledger running at http://localhost:8000
+- A SCITT ledger running at https://localhost:8000
 - An OCI registry running at localhost:5000
 
 Run with: pytest -m integration
@@ -19,11 +19,12 @@ class TestSCITTLedgerIntegration:
     def test_scitt_ledger_is_available(self):
         """Should be able to connect to SCITT ledger."""
         try:
-            response = httpx.get("http://localhost:8000", timeout=5.0)
+            # SCITT ledger uses HTTPS with self-signed cert, so disable verification
+            response = httpx.get("https://localhost:8000/node/network", timeout=5.0, verify=False)
             # SCITT ledger should respond (any status is fine, just checking connectivity)
             assert response.status_code in [200, 404, 405]  # Common responses
         except httpx.RequestError as e:
-            pytest.fail(f"Cannot connect to SCITT ledger at http://localhost:8000: {e}")
+            pytest.fail(f"Cannot connect to SCITT ledger at https://localhost:8000: {e}")
 
 
 @pytest.mark.integration
