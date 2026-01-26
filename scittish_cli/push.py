@@ -63,10 +63,19 @@ def display_push_info(
     print("=" * 60 + "\n")
 
 
+def save_receipt(receipt_data: bytes) -> Path:
+    """Save receipt to current directory with truncated hash filename."""
+    receipt_hash = hashlib.sha256(receipt_data).hexdigest()[:16]
+    receipt_path = Path.cwd() / f"receipt-{receipt_hash}.cose"
+    receipt_path.write_bytes(receipt_data)
+    return receipt_path
+
+
 def display_receipt_info(
     receipt_data: bytes,
     original_file_path: Optional[Path],
     original_hash: str,
+    saved_path: Path,
 ) -> None:
     """Display information about the received receipt."""
     receipt_hash = hashlib.sha256(receipt_data).hexdigest()
@@ -80,6 +89,7 @@ def display_receipt_info(
     print(f"  Receipt size:    {format_size(len(receipt_data))}")
     print(f"  Receipt SHA256:  {receipt_hash}")
     print(f"  Receipt type:    application/cose")
+    print(f"  Saved to:        {saved_path}")
     print("=" * 60 + "\n")
 
 
@@ -284,11 +294,15 @@ def push(
         print(f"Error: {e}", file=sys.stderr)
         return 1
     
+    # Save receipt to disk
+    saved_path = save_receipt(receipt_data)
+    
     # Display receipt info
     display_receipt_info(
         receipt_data=receipt_data,
         original_file_path=file_path,
         original_hash=payload_hash,
+        saved_path=saved_path,
     )
     
     # Pretty-print receipt if requested
