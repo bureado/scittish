@@ -41,8 +41,20 @@ public class CertificateService
         string leafKeyPath = Path.Combine(_certsDir, "leaf_key.pem");
         string pfxPath = Path.Combine(_certsDir, "signing.pfx");
 
-        if (File.Exists(rootPemPath) && File.Exists(leafPemPath) && File.Exists(leafKeyPath) && File.Exists(pfxPath))
+        if (File.Exists(rootPemPath) && File.Exists(leafPemPath) && File.Exists(leafKeyPath))
         {
+            // PEM files exist (possibly from the Python version). Generate PFX if missing.
+            if (!File.Exists(pfxPath))
+            {
+                _logger.LogInformation("PEM files found but PFX missing; generating PFX from existing certs...");
+                RunOpenSsl("pkcs12", "-export",
+                    "-out", pfxPath,
+                    "-inkey", leafKeyPath,
+                    "-in", leafPemPath,
+                    "-certfile", rootPemPath,
+                    "-passout", "pass:");
+            }
+
             _logger.LogInformation("Loaded existing certificate chain from {CertsDir}", _certsDir);
             return new CertificateChain
             {
