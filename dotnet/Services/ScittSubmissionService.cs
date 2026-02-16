@@ -1,3 +1,4 @@
+using System.Formats.Cbor;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Scittish.Api.Models;
@@ -7,6 +8,7 @@ namespace Scittish.Api.Services;
 /// <summary>
 /// Submits signed COSE statements to a SCITT ledger (scitt-ccf-ledger compatible).
 /// Uses the HTTP API directly: POST /entries, poll GET /operations/{id}, GET /entries/{id}/statement.
+/// The ledger returns CBOR responses (application/cbor).
 /// </summary>
 public class ScittSubmissionService
 {
@@ -48,15 +50,15 @@ public class ScittSubmissionService
 
         if ((int)response.StatusCode == 202)
         {
-            // Accepted - need to poll for completion
+            // Accepted - extract operation URL from Location header or CBOR body
             string? operationUrl = response.Headers.Location?.ToString();
             if (string.IsNullOrEmpty(operationUrl))
             {
-                string body = await response.Content.ReadAsStringAsync(cancellationToken);
-                JsonDocument doc = JsonDocument.Parse(body);
-                if (doc.RootElement.TryGetProperty("operationId", out JsonElement opId))
+                byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+                Dictionary<string, string> cborMap = DecodeCborMap(body);
+                if (cborMap.TryGetValue("OperationId", out string? opId))
                 {
-                    operationUrl = $"/operations/{opId.GetString()}";
+                    operationUrl = $"/operations/{opId}";
                 }
             }
 
@@ -65,21 +67,25 @@ public class ScittSubmissionService
                 throw new InvalidOperationException("No operation URL returned from SCITT ledger");
             }
 
+            // Use relative path for polling
+            Uri opUri = new(operationUrl, UriKind.RelativeOrAbsolute);
+            string relativePath = opUri.IsAbsoluteUri ? opUri.PathAndQuery : operationUrl;
+
             // Poll operation until complete
-            string entryId = await PollOperationAsync(operationUrl, cancellationToken);
+            string entryId = await PollOperationAsync(relativePath, cancellationToken);
 
             // Fetch the transparent statement
             return await FetchStatementAsync(entryId, cancellationToken);
         }
         else if (response.IsSuccessStatusCode)
         {
-            // Direct success - read receipt
             return await response.Content.ReadAsByteArrayAsync(cancellationToken);
         }
         else
         {
-            string errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"SCITT submission failed ({response.StatusCode}): {errorBody}");
+            byte[] errorBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            string errorInfo = TryDescribeError(errorBytes);
+            throw new InvalidOperationException($"SCITT submission failed ({response.StatusCode}): {errorInfo}");
         }
     }
 
@@ -91,24 +97,24 @@ public class ScittSubmissionService
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
 
             HttpResponseMessage response = await _httpClient.GetAsync(operationUrl, cancellationToken);
-            string body = await response.Content.ReadAsStringAsync(cancellationToken);
+            byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken);
 
             if (response.IsSuccessStatusCode && (int)response.StatusCode == 200)
             {
-                JsonDocument doc = JsonDocument.Parse(body);
-                if (doc.RootElement.TryGetProperty("entryId", out JsonElement entryId))
+                Dictionary<string, string> cborMap = DecodeCborMap(body);
+                if (cborMap.TryGetValue("EntryId", out string? entryId))
                 {
-                    string id = entryId.GetString() ?? throw new InvalidOperationException("entryId is null");
-                    _logger.LogInformation("SCITT operation completed (entry={EntryId})", id);
-                    return id;
+                    _logger.LogInformation("SCITT operation completed (entry={EntryId})", entryId);
+                    return entryId;
                 }
-                // Operation complete, extract entry path from operationUrl
+                // Fallback: extract from operation URL
                 return operationUrl.Replace("/operations/", "");
             }
 
             if ((int)response.StatusCode != 202)
             {
-                throw new InvalidOperationException($"SCITT operation poll failed ({response.StatusCode}): {body}");
+                string errorInfo = TryDescribeError(body);
+                throw new InvalidOperationException($"SCITT operation poll failed ({response.StatusCode}): {errorInfo}");
             }
 
             _logger.LogDebug("Polling SCITT operation (attempt {Attempt})...", attempt);
@@ -137,10 +143,52 @@ public class ScittSubmissionService
                 continue;
             }
 
-            string body = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"Failed to fetch statement ({response.StatusCode}): {body}");
+            byte[] errorBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            string errorInfo = TryDescribeError(errorBytes);
+            throw new InvalidOperationException($"Failed to fetch statement ({response.StatusCode}): {errorInfo}");
         }
 
         throw new TimeoutException("Failed to fetch statement after retries");
+    }
+
+    /// <summary>
+    /// Decode a CBOR map with text string keys and text string values.
+    /// </summary>
+    private static Dictionary<string, string> DecodeCborMap(byte[] data)
+    {
+        Dictionary<string, string> result = new();
+        try
+        {
+            CborReader reader = new(data);
+            int? mapLength = reader.ReadStartMap();
+            int count = mapLength ?? 0;
+            for (int i = 0; i < count; i++)
+            {
+                string key = reader.ReadTextString();
+                string value = reader.ReadTextString();
+                result[key] = value;
+            }
+            reader.ReadEndMap();
+        }
+        catch
+        {
+            // If CBOR parsing fails, return empty map
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Try to produce a human-readable error description from CBOR or text response bytes.
+    /// </summary>
+    private static string TryDescribeError(byte[] data)
+    {
+        // Try CBOR map first
+        Dictionary<string, string> cborMap = DecodeCborMap(data);
+        if (cborMap.Count > 0)
+        {
+            return string.Join("; ", cborMap.Select(kv => $"{kv.Key}={kv.Value}"));
+        }
+        // Fall back to raw text
+        return System.Text.Encoding.UTF8.GetString(data);
     }
 }

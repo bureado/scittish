@@ -124,7 +124,8 @@ app.MapPost("/sign", async (HttpContext ctx, CacheService cache, JobService jobs
             }
         }
 
-        ctx.Response.Headers["Location"] = $"/sign/{jobId}";
+        string locationUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}/sign/{jobId}";
+        ctx.Response.Headers["Location"] = locationUrl;
         return Results.Json(new
         {
             job_id = jobId,
@@ -152,7 +153,8 @@ app.MapPost("/sign", async (HttpContext ctx, CacheService cache, JobService jobs
 
     await worker.EnqueueAsync(jobId);
 
-    ctx.Response.Headers["Location"] = $"/sign/{jobId}";
+    string newJobLocationUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}/sign/{jobId}";
+    ctx.Response.Headers["Location"] = newJobLocationUrl;
     return Results.Json(new { job_id = jobId, status = "pending" }, statusCode: 202);
 });
 
