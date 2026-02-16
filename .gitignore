@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.egg-info/
 .scittish
+
+dotnet/bin/
+dotnet/obj/
