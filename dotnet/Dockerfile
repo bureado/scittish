@@ -1,29 +1,29 @@
-# Stage 1: Build Go attest-helper
-FROM golang:1.21-alpine AS go-builder
-
-WORKDIR /build
-
-# Copy Go modules
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy Go source
-COPY cmd/ ./cmd/
-COPY pkg/ ./pkg/
-
-# Build attest-helper
-RUN CGO_ENABLED=0 GOOS=linux go build -o attest-helper ./cmd/attest-helper
+# Stage 1: Build Go attest-helper (commented out - not used currently)
+# FROM golang:1.21-alpine AS go-builder
+#
+# WORKDIR /build
+#
+# # Copy Go modules
+# COPY ../go.mod ../go.sum ./
+# RUN go mod download
+#
+# # Copy Go source
+# COPY ../cmd/ ./cmd/
+# COPY ../pkg/ ./pkg/
+#
+# # Build attest-helper
+# RUN CGO_ENABLED=0 GOOS=linux go build -o attest-helper ./cmd/attest-helper
 
 # Stage 2: Build .NET application
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS dotnet-builder
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS dotnet-builder
 
 WORKDIR /build
 
-COPY dotnet/ ./
+COPY . ./
 RUN dotnet publish -c Release -o /app/publish
 
 # Stage 3: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+FROM mcr.microsoft.com/dotnet/aspnet:9.0
 
 WORKDIR /app
 
@@ -39,8 +39,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # Copy .NET application
 COPY --from=dotnet-builder /app/publish .
 
-# Copy Go binary from builder
-COPY --from=go-builder /build/attest-helper /app/attest-helper
+# Copy Go binary from builder (commented out - not used currently)
+# COPY --from=go-builder /build/attest-helper /app/attest-helper
 
 # Copy CoseSignTool (must be pre-built and available)
 # In practice, this would be a published build of CoseSignTool
@@ -56,7 +56,7 @@ ENV SCITT_JOBS_DIR=/var/cache/scittish/jobs
 ENV SCITT_URL=https://localhost:8000
 ENV SCITT_DEVELOPMENT=true
 ENV MAA_ENDPOINT=sharedeus.eus.attest.azure.net
-ENV ATTEST_HELPER_PATH=/app/attest-helper
+# ENV ATTEST_HELPER_PATH=/app/attest-helper
 ENV ALLOW_FAKE_ATTESTATION=false
 ENV COSESIGNTOOL_PATH=/app/CoseSignTool
 ENV OCI_REGISTRY=
