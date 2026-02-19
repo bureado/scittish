@@ -4,10 +4,17 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Formats.Cbor" Version="10.0.3" />
+  </ItemGroup>
+
+  <!-- CoseSignTool library references (resolved in Docker build where source is cloned) -->
+  <ItemGroup>
+    <ProjectReference Include="../CoseIndirectSignature/CoseIndirectSignature.csproj" />
+    <ProjectReference Include="../CoseSign1.Certificates/CoseSign1.Certificates.csproj" />
   </ItemGroup>
 
 </Project>

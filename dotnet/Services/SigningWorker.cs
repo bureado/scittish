@@ -95,12 +95,14 @@ public class SigningWorker : BackgroundService
             return;
         }
 
-        string payloadHash = Convert.ToHexStringLower(SHA256.HashData(payloadData.Payload));
+        string payloadHash = payloadData.IsHashOnly
+            ? Convert.ToHexStringLower(payloadData.Payload)
+            : Convert.ToHexStringLower(SHA256.HashData(payloadData.Payload));
 
         // Resolve subject
         ResolverContext resolverContext = new()
         {
-            Payload = payloadData.Payload,
+            Payload = payloadData.IsHashOnly ? null : payloadData.Payload,
             PayloadHash = payloadHash,
             ContentType = payloadData.ContentType,
             ClientSubject = payloadData.ClientSubject,
@@ -113,9 +115,18 @@ public class SigningWorker : BackgroundService
 
         try
         {
-            // Sign
-            byte[] signedStatement = await _signingService.SignPayloadAsync(
-                payloadData.Payload, payloadHash, payloadData.ContentType, resolverResult.Subject, cancellationToken);
+            // Sign (full payload or hash-only endorsement)
+            byte[] signedStatement;
+            if (payloadData.IsHashOnly)
+            {
+                signedStatement = await _signingService.SignHashAsync(
+                    payloadData.Payload, payloadData.ContentType, resolverResult.Subject, cancellationToken);
+            }
+            else
+            {
+                signedStatement = await _signingService.SignPayloadAsync(
+                    payloadData.Payload, payloadHash, payloadData.ContentType, resolverResult.Subject, cancellationToken);
+            }
 
             // Submit to SCITT
             byte[] transparentStatement = await _submissionService.SubmitAndWaitAsync(signedStatement, cancellationToken);

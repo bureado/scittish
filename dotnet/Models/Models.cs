@@ -25,6 +25,10 @@ public class JobPayload
     public string ContentType { get; set; } = "application/octet-stream";
     public string? ClientSubject { get; set; }
     public Dictionary<string, string> Headers { get; set; } = new();
+    /// <summary>
+    /// When true, Payload contains only the raw hash bytes (not the original payload).
+    /// </summary>
+    public bool IsHashOnly { get; set; }
 }
 
 public class CertificateChain

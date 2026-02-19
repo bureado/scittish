@@ -134,11 +134,8 @@ app.MapPost("/sign", async (HttpContext ctx, CacheService cache, JobService jobs
         }, statusCode: existingJob.Status is JobStatus.Pending or JobStatus.Processing ? 202 : 200);
     }
 
-    // Hash-only mode not yet supported
-    if (!string.IsNullOrEmpty(payloadHashHeader) && (payload is null || payload.Length == 0))
-    {
-        return Results.Json(new { error = "Not yet implemented: Signing by hash only is not supported" }, statusCode: 501);
-    }
+    // Hash-only mode: sign the hash directly (endorsement)
+    bool isHashOnly = !string.IsNullOrEmpty(payloadHashHeader) && (payload is null || payload.Length == 0);
 
     // Create job
     JobInfo job = new()
@@ -149,7 +146,16 @@ app.MapPost("/sign", async (HttpContext ctx, CacheService cache, JobService jobs
         UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
     };
     jobs.SaveJob(job);
-    jobs.SaveJobPayload(jobId, payload!, contentType, clientSubject, reqHeaders);
+
+    if (isHashOnly)
+    {
+        byte[] hashBytes = Convert.FromHexString(payloadHashHeader!);
+        jobs.SaveJobPayload(jobId, hashBytes, contentType, clientSubject, reqHeaders, isHashOnly: true);
+    }
+    else
+    {
+        jobs.SaveJobPayload(jobId, payload!, contentType, clientSubject, reqHeaders, isHashOnly: false);
+    }
 
     await worker.EnqueueAsync(jobId);
 

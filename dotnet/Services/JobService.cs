@@ -49,7 +49,7 @@ public class JobService
         File.WriteAllText(path, json);
     }
 
-    public void SaveJobPayload(string jobId, byte[] payload, string contentType, string? clientSubject, Dictionary<string, string> headers)
+    public void SaveJobPayload(string jobId, byte[] payload, string contentType, string? clientSubject, Dictionary<string, string> headers, bool isHashOnly = false)
     {
         Directory.CreateDirectory(_jobsDir);
         string path = Path.Combine(_jobsDir, $"{jobId}.payload");
@@ -60,6 +60,7 @@ public class JobService
                 content_type = contentType,
                 client_subject = clientSubject,
                 headers,
+                is_hash_only = isHashOnly,
             },
             payload = Convert.ToBase64String(payload),
         };
@@ -96,6 +97,7 @@ public class JobService
                 ContentType = meta.GetProperty("content_type").GetString() ?? "application/octet-stream",
                 ClientSubject = meta.TryGetProperty("client_subject", out JsonElement cs) ? cs.GetString() : null,
                 Headers = headers,
+                IsHashOnly = meta.TryGetProperty("is_hash_only", out JsonElement iho) && iho.GetBoolean(),
             };
         }
         catch (Exception ex)
