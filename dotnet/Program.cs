@@ -264,7 +264,7 @@ app.MapPost("/attest", async (HttpContext ctx, CertificateService certSvc) =>
         if (proc.ExitCode != 0)
         {
             string stderr = await proc.StandardError.ReadToEndAsync();
-            return Results.Json(new { error = $"attest-helper failed: {stderr}" }, statusCode: 502);
+            return Results.Json(new { error = $"attest-helper failed: {stdout} {stderr}".Trim() }, statusCode: 502);
         }
 
         JsonDocument result = JsonDocument.Parse(stdout);

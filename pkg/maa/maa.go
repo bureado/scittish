@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -20,8 +21,13 @@ const (
 )
 
 type maaReport struct {
-	SNPReport string `json:"SnpReport"`
-	CertChain string `json:"VcekCertChain,omitempty"`
+	SNPReport    string `json:"SnpReport"`
+	CertChain    string `json:"VcekCertChain"`
+	Endorsements string `json:"Endorsements,omitempty"`
+}
+
+type maaEndorsements struct {
+	Uvm []string `json:"Uvm"`
 }
 
 type attestedData struct {
@@ -39,13 +45,31 @@ type maaResponse struct {
 	Token string `json:"token"`
 }
 
-// GetMAAToken exchanges an SNP attestation report for an MAA token
-func GetMAAToken(maaEndpoint string, snpReport []byte, runtimeData []byte) (string, error) {
-	// Build the MAA report structure
+// GetMAAToken exchanges an SNP attestation report + VCEK cert chain for an MAA token.
+// vcekCertChain is the concatenation of the VCEK cert and the certificate chain from THIM.
+// uvmReferenceInfo is the optional base64-encoded UVM reference info for endorsements.
+func GetMAAToken(maaEndpoint string, snpReport []byte, vcekCertChain []byte, runtimeData []byte, uvmReferenceInfo string) (string, error) {
+	// Build endorsements from UVM reference info if available.
+	// The reference info from the platform file is base64-encoded; MAA requires base64url.
+	var encodedEndorsements string
+	if uvmReferenceInfo != "" {
+		// Ensure base64url encoding (replace + with -, / with _)
+		cleanRef := strings.TrimSpace(uvmReferenceInfo)
+		cleanRef = strings.NewReplacer("+", "-", "/", "_").Replace(cleanRef)
+		endorsement := maaEndorsements{
+			Uvm: []string{cleanRef},
+		}
+		endorsementJSON, err := json.Marshal(endorsement)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal endorsements: %v", err)
+		}
+		encodedEndorsements = base64.URLEncoding.EncodeToString(endorsementJSON)
+	}
+
 	report := maaReport{
-		SNPReport: base64.URLEncoding.EncodeToString(snpReport),
-		// Note: In a real C-ACI environment, we'd include the VCEK cert chain
-		// For now, MAA will fetch it from AMD's KDS based on the chip ID in the report
+		SNPReport:    base64.URLEncoding.EncodeToString(snpReport),
+		CertChain:    base64.URLEncoding.EncodeToString(vcekCertChain),
+		Endorsements: encodedEndorsements,
 	}
 
 	reportJSON, err := json.Marshal(report)
@@ -53,8 +77,7 @@ func GetMAAToken(maaEndpoint string, snpReport []byte, runtimeData []byte) (stri
 		return "", fmt.Errorf("failed to marshal MAA report: %v", err)
 	}
 
-	// Build the request body
-	rand.Seed(time.Now().UnixNano())
+	rand.New(rand.NewSource(time.Now().UnixNano()))
 	request := attestSNPRequestBody{
 		Report: base64.URLEncoding.EncodeToString(reportJSON),
 		RuntimeData: attestedData{
@@ -69,7 +92,6 @@ func GetMAAToken(maaEndpoint string, snpReport []byte, runtimeData []byte) (stri
 		return "", fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	// Make HTTP request to MAA
 	uri := fmt.Sprintf(AttestRequestURITemplate, maaEndpoint)
 	resp, err := http.Post(uri, "application/json", bytes.NewBuffer(requestJSON))
 	if err != nil {

@@ -1,18 +1,18 @@
-# Stage 1: Build Go attest-helper (commented out - not used currently)
-# FROM golang:1.21-alpine AS go-builder
-#
-# WORKDIR /build
-#
-# # Copy Go modules
-# COPY ../go.mod ../go.sum ./
-# RUN go mod download
-#
-# # Copy Go source
-# COPY ../cmd/ ./cmd/
-# COPY ../pkg/ ./pkg/
-#
-# # Build attest-helper
-# RUN CGO_ENABLED=0 GOOS=linux go build -o attest-helper ./cmd/attest-helper
+# Stage 1: Build Go attest-helper
+FROM golang:1.21-alpine AS go-builder
+
+WORKDIR /build
+
+# Copy Go modules
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy Go source
+COPY cmd/ ./cmd/
+COPY pkg/ ./pkg/
+
+# Build attest-helper
+RUN CGO_ENABLED=0 GOOS=linux go build -o attest-helper ./cmd/attest-helper
 
 # Stage 2: Build .NET application with CoseSignTool libraries
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS dotnet-builder
@@ -26,12 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && apt-get remove -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 # Copy scittish API source into the tree (sibling to CoseSignTool projects)
-COPY *.csproj *.cs appsettings*.json /src/Scittish.Api/
-COPY Services/ /src/Scittish.Api/Services/
-COPY Models/ /src/Scittish.Api/Models/
-COPY Resolvers/ /src/Scittish.Api/Resolvers/
-COPY Indexers/ /src/Scittish.Api/Indexers/
-COPY Properties/ /src/Scittish.Api/Properties/
+COPY dotnet/*.csproj dotnet/*.cs dotnet/appsettings*.json /src/Scittish.Api/
+COPY dotnet/Services/ /src/Scittish.Api/Services/
+COPY dotnet/Models/ /src/Scittish.Api/Models/
+COPY dotnet/Resolvers/ /src/Scittish.Api/Resolvers/
+COPY dotnet/Indexers/ /src/Scittish.Api/Indexers/
+COPY dotnet/Properties/ /src/Scittish.Api/Properties/
 
 # Publish the API (project references to CoseSignTool libs resolve automatically)
 RUN dotnet publish /src/Scittish.Api/Scittish.Api.csproj -c Release -o /app/publish
@@ -53,8 +53,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # Copy .NET application
 COPY --from=dotnet-builder /app/publish .
 
-# Copy Go binary from builder (commented out - not used currently)
-# COPY --from=go-builder /build/attest-helper /app/attest-helper
+# Copy Go binary from builder
+COPY --from=go-builder /build/attest-helper /app/attest-helper
 
 # Create directories for certs, cache, and jobs
 RUN mkdir -p /var/cache/scittish /var/lib/scittish/certs /var/cache/scittish/jobs

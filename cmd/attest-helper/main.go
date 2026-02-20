@@ -13,12 +13,13 @@ import (
 
 	"github.com/scittish/attest-helper/pkg/attest"
 	"github.com/scittish/attest-helper/pkg/maa"
+	"github.com/scittish/attest-helper/pkg/platform"
 )
 
 type AttestResponse struct {
-	Token string `json:"token,omitempty"`
+	Token  string `json:"token,omitempty"`
 	Report string `json:"report,omitempty"`
-	Error string `json:"error,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 func main() {
@@ -26,7 +27,7 @@ func main() {
 	maaEndpoint := flag.String("maa-endpoint", "sharedeus.eus.attest.azure.net", "MAA endpoint")
 	rawOnly := flag.Bool("raw", false, "Return raw attestation report only (no MAA token)")
 	allowFake := flag.Bool("allow-fake", false, "Allow fake attestation report on non-SNP systems")
-	
+
 	flag.Parse()
 
 	response := AttestResponse{}
@@ -72,8 +73,23 @@ func main() {
 		return
 	}
 
+	// Read platform-injected VCEK cert chain and UVM reference info.
+	// On C-ACI, THIM certs are in /security-context-*/host-amd-cert-base64.
+	// These are required by MAA to validate the SNP report signature.
+	var vcekCertChain []byte
+	var uvmReferenceInfo string
+
+	uvmInfo, err := platform.GetUvmInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read platform UVM info: %v\n", err)
+		// Continue with empty cert chain — MAA will reject if it can't validate
+	} else {
+		vcekCertChain = uvmInfo.VcekCertChain
+		uvmReferenceInfo = uvmInfo.ReferenceInfo
+	}
+
 	// Get MAA token
-	token, err := maa.GetMAAToken(*maaEndpoint, reportBytes, runtimeData)
+	token, err := maa.GetMAAToken(*maaEndpoint, reportBytes, vcekCertChain, runtimeData, uvmReferenceInfo)
 	if err != nil {
 		response.Error = fmt.Sprintf("failed to get MAA token: %v", err)
 		outputJSON(response)
