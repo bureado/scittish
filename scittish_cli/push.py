@@ -71,17 +71,38 @@ def save_receipt(receipt_data: bytes) -> Path:
     return receipt_path
 
 
+def extract_subject_from_receipt(receipt_data: bytes) -> Optional[str]:
+    """Extract the CWT subject claim from a COSE_Sign1 receipt/signed statement."""
+    try:
+        import cbor2
+        msg = cbor2.loads(receipt_data)
+        # Unwrap CBOR tag if present (tag 18 = COSE_Sign1)
+        if isinstance(msg, cbor2.CBORTag):
+            msg = msg.value
+        protected = cbor2.loads(msg[0]) if isinstance(msg[0], bytes) else msg[0]
+        # CWT Claims at label 15
+        cwt = protected.get(15)
+        if cwt is None:
+            return None
+        if isinstance(cwt, bytes):
+            cwt = cbor2.loads(cwt)
+        # sub = claim 2
+        return cwt.get(2)
+    except Exception:
+        return None
+
+
 def display_receipt_info(
     receipt_data: bytes,
     original_file_path: Optional[Path],
     original_hash: str,
     saved_path: Path,
-    subject: Optional[str] = None,
     oci_registry: Optional[str] = None,
     oci_namespace: Optional[str] = None,
 ) -> None:
     """Display information about the received receipt."""
     receipt_hash = hashlib.sha256(receipt_data).hexdigest()
+    subject = extract_subject_from_receipt(receipt_data)
     
     print("\n" + "=" * 60)
     print("RECEIPT RECEIVED")
@@ -92,6 +113,8 @@ def display_receipt_info(
     print(f"  Receipt size:    {format_size(len(receipt_data))}")
     print(f"  Receipt SHA256:  {receipt_hash}")
     print(f"  Receipt type:    application/cose")
+    if subject:
+        print(f"  Subject:         {subject}")
     print(f"  Saved to:        {saved_path}")
     
     if subject and oci_registry and oci_namespace:
@@ -327,7 +350,6 @@ def push(
         original_file_path=file_path,
         original_hash=payload_hash,
         saved_path=saved_path,
-        subject=effective_subject,
         oci_registry=oci_registry,
         oci_namespace=oci_namespace,
     )
