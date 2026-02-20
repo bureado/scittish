@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 import httpx
 
-from .config import GlobalConfig, get_effective_subject
+from .config import GlobalConfig, get_effective_subject, fetch_server_properties
 
 
 def compute_file_hash(file_path: Path) -> str:
@@ -76,6 +76,9 @@ def display_receipt_info(
     original_file_path: Optional[Path],
     original_hash: str,
     saved_path: Path,
+    subject: Optional[str] = None,
+    oci_registry: Optional[str] = None,
+    oci_namespace: Optional[str] = None,
 ) -> None:
     """Display information about the received receipt."""
     receipt_hash = hashlib.sha256(receipt_data).hexdigest()
@@ -90,6 +93,14 @@ def display_receipt_info(
     print(f"  Receipt SHA256:  {receipt_hash}")
     print(f"  Receipt type:    application/cose")
     print(f"  Saved to:        {saved_path}")
+    
+    if subject and oci_registry and oci_namespace:
+        subject_hash = hashlib.sha256(subject.encode()).hexdigest()
+        oci_ref = f"{oci_registry}/{oci_namespace}/{subject_hash}:subject"
+        print()
+        print(f"  OCI subject:     {oci_ref}")
+        print(f"  Discover:        oras discover --insecure {oci_ref}")
+    
     print("=" * 60 + "\n")
 
 
@@ -297,12 +308,28 @@ def push(
     # Save receipt to disk
     saved_path = save_receipt(receipt_data)
     
+    # Fetch OCI indexer info for receipt display
+    oci_registry = None
+    oci_namespace = None
+    try:
+        properties = fetch_server_properties(config.server_uri)
+        for idx in properties.get("indexers", []):
+            if idx.get("enabled"):
+                oci_registry = idx.get("registry")
+                oci_namespace = idx.get("namespace")
+                break
+    except RuntimeError:
+        pass  # Non-critical, just won't show OCI ref
+    
     # Display receipt info
     display_receipt_info(
         receipt_data=receipt_data,
         original_file_path=file_path,
         original_hash=payload_hash,
         saved_path=saved_path,
+        subject=effective_subject,
+        oci_registry=oci_registry,
+        oci_namespace=oci_namespace,
     )
     
     # Pretty-print receipt if requested

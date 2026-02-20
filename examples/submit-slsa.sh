@@ -12,6 +12,5 @@ echo "Payload: $PAYLOAD ($(wc -c < "$PAYLOAD") bytes)"
 echo
 
 scittish-cli push "$PAYLOAD" \
-  --subject "example:slsa-provenance" \
   --no-prompt \
   --show-receipt

@@ -12,7 +12,7 @@ import argparse
 import sys
 
 from . import __version__
-from .config import set_server, set_subject, GlobalConfig, LocalConfig
+from .config import set_server, set_subject, GlobalConfig, LocalConfig, fetch_server_properties
 from .push import push
 
 
@@ -65,6 +65,33 @@ def cmd_status(args) -> int:
         print(f"  Subject:        {local_config.subject}")
     else:
         print("  (not configured)")
+    
+    # Fetch live server properties
+    if global_config.server_uri:
+        print()
+        try:
+            properties = fetch_server_properties(global_config.server_uri)
+            print(f"Server properties ({global_config.server_uri}/properties):")
+            print(f"  SCITT URL:      {properties.get('scitt_url', '(unknown)')}")
+            
+            chain = properties.get("certificate_chain", "")
+            if chain:
+                cert_count = chain.count("-----BEGIN CERTIFICATE-----")
+                print(f"  Cert chain:     {cert_count} certificate(s)")
+            
+            resolvers = properties.get("subject_resolvers", [])
+            if resolvers:
+                names = ", ".join(r.get("name", "?") for r in resolvers)
+                print(f"  Resolvers:      {names}")
+            
+            indexers = properties.get("indexers", [])
+            for idx in indexers:
+                enabled = "enabled" if idx.get("enabled") else "disabled"
+                registry = idx.get("registry", "")
+                namespace = idx.get("namespace", "")
+                print(f"  OCI indexer:    {enabled} ({registry}/{namespace})")
+        except RuntimeError as e:
+            print(f"  (server unreachable: {e})")
     
     return 0
 
