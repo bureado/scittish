@@ -105,7 +105,7 @@ public class OciIndexer
         {
             string subjectHash = SubjectToRepoName(context.Subject);
             string subjectRepo = $"{_registry}/{_namespace}/{subjectHash}";
-            string subjectRef = $"{subjectRepo}:subject";
+            string subjectRef = $"{subjectRepo}:latest";
 
             string tempDir = Path.Combine(Path.GetTempPath(), $"scittish-oci-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);

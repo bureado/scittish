@@ -96,7 +96,7 @@ def display_receipt_info(
     
     if subject and oci_registry and oci_namespace:
         subject_hash = hashlib.sha256(subject.encode()).hexdigest()
-        oci_ref = f"{oci_registry}/{oci_namespace}/{subject_hash}:subject"
+        oci_ref = f"{oci_registry}/{oci_namespace}/{subject_hash}:latest"
         print()
         print(f"  OCI subject:     {oci_ref}")
         print(f"  Discover:        oras discover --insecure {oci_ref}")
