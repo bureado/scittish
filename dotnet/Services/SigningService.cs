@@ -4,6 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 using CoseIndirectSignature;
 using CoseSign1.Abstractions.Interfaces;
 using CoseSign1.Certificates.Local;
+using CoseSign1.Headers;
 using Scittish.Api.Models;
 
 namespace Scittish.Api.Services;
@@ -32,6 +33,7 @@ public class SigningService
         _logger.LogInformation("Signing payload with hash {Hash}...", payloadHash[..16]);
 
         ICoseSigningKeyProvider keyProvider = CreateKeyProvider();
+        ICoseHeaderExtender? headerExtender = CreateCwtHeaderExtender(subject);
 
         using IndirectSignatureFactory factory = new(HashAlgorithmName.SHA256);
         using MemoryStream payloadStream = new(payload);
@@ -41,6 +43,7 @@ public class SigningService
             signingKeyProvider: keyProvider,
             contentType: contentType,
             signatureVersion: IndirectSignatureFactory.IndirectSignatureVersion.CoseHashEnvelope,
+            coseHeaderExtender: headerExtender,
             cancellationToken: cancellationToken);
 
         byte[] signedStatement = signature.Encode();
@@ -57,6 +60,7 @@ public class SigningService
         _logger.LogInformation("Signing pre-computed hash (endorsement mode)...");
 
         ICoseSigningKeyProvider keyProvider = CreateKeyProvider();
+        ICoseHeaderExtender? headerExtender = CreateCwtHeaderExtender(subject);
 
         using IndirectSignatureFactory factory = new(HashAlgorithmName.SHA256);
         using MemoryStream hashStream = new(hashBytes);
@@ -66,6 +70,7 @@ public class SigningService
             signingKeyProvider: keyProvider,
             contentType: contentType,
             signatureVersion: IndirectSignatureFactory.IndirectSignatureVersion.CoseHashEnvelope,
+            coseHeaderExtender: headerExtender,
             cancellationToken: cancellationToken);
 
         byte[] signedStatement = signature.Encode();
@@ -93,5 +98,21 @@ public class SigningService
             hashAlgorithm: HashAlgorithmName.SHA256,
             rootCertificates: rootCerts,
             enableScittCompliance: true);
+    }
+
+    /// <summary>
+    /// Creates a CWT claims header extender that overrides the default subject
+    /// set by enableScittCompliance with the resolved subject from the request.
+    /// </summary>
+    private CWTClaimsHeaderExtender? CreateCwtHeaderExtender(string? subject)
+    {
+        if (string.IsNullOrEmpty(subject))
+        {
+            return null;
+        }
+
+        CWTClaimsHeaderExtender extender = new();
+        extender.SetSubject(subject);
+        return extender;
     }
 }
