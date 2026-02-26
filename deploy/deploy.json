@@ -1,0 +1,163 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "containerGroupName": {
+      "type": "string",
+      "defaultValue": "scittish-caci"
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "southcentralus"
+    },
+    "acrServer": {
+      "type": "string",
+      "defaultValue": "<your-acr>.azurecr.io",
+      "metadata": {
+        "description": "FQDN of the Azure Container Registry"
+      }
+    },
+    "identityResourceId": {
+      "type": "string",
+      "defaultValue": "/subscriptions/<subscription-id>/resourcegroups/<resource-group>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity-name>",
+      "metadata": {
+        "description": "Resource ID of the user-assigned managed identity for ACR pull"
+      }
+    },
+    "identityClientId": {
+      "type": "string",
+      "defaultValue": "<identity-client-id>",
+      "metadata": {
+        "description": "Client ID of the user-assigned managed identity"
+      }
+    },
+    "dnsNameLabel": {
+      "type": "string",
+      "defaultValue": "scittish-caci",
+      "metadata": {
+        "description": "DNS name label for the container group public IP"
+      }
+    }
+  },
+  "variables": {
+    "acrServer": "[parameters('acrServer')]",
+    "identityId": "[parameters('identityResourceId')]",
+    "identityClientId": "[parameters('identityClientId')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerInstance/containerGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('containerGroupName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[variables('identityId')]": {}
+        }
+      },
+      "properties": {
+        "confidentialComputeProperties": {
+          "ccePolicy": "<base64-encoded-cce-policy>"
+        },
+        "sku": "Confidential",
+        "osType": "Linux",
+        "restartPolicy": "Never",
+        "ipAddress": {
+          "type": "Public",
+          "dnsNameLabel": "[parameters('dnsNameLabel')]",
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8080
+            }
+          ]
+        },
+        "imageRegistryCredentials": [
+          {
+            "server": "[variables('acrServer')]",
+            "identity": "[variables('identityId')]"
+          }
+        ],
+        "containers": [
+          {
+            "name": "scitt",
+            "properties": {
+              "image": "[concat(variables('acrServer'), '/scitt-virtual-init:latest')]",
+              "resources": {
+                "requests": {
+                  "cpu": 1,
+                  "memoryInGb": 2
+                }
+              },
+              "ports": []
+            }
+          },
+          {
+            "name": "registry",
+            "properties": {
+              "image": "[concat(variables('acrServer'), '/registry:latest')]",
+              "resources": {
+                "requests": {
+                  "cpu": 0.5,
+                  "memoryInGb": 0.5
+                }
+              },
+              "ports": []
+            }
+          },
+          {
+            "name": "scittish",
+            "properties": {
+              "image": "[concat(variables('acrServer'), '/scittish-dotnet:library')]",
+              "resources": {
+                "requests": {
+                  "cpu": 1,
+                  "memoryInGb": 1.5
+                }
+              },
+              "ports": [
+                {
+                  "protocol": "TCP",
+                  "port": 8080
+                }
+              ],
+              "environmentVariables": [
+                {
+                  "name": "SCITT_URL",
+                  "value": "https://localhost:8000"
+                },
+                {
+                  "name": "SCITT_DEVELOPMENT",
+                  "value": "true"
+                },
+                {
+                  "name": "OCI_REGISTRY",
+                  "value": "localhost:5000"
+                },
+                {
+                  "name": "OCI_INSECURE",
+                  "value": "true"
+                },
+                {
+                  "name": "ALLOW_FAKE_ATTESTATION",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "fqdn": {
+      "type": "string",
+      "value": "[reference(parameters('containerGroupName')).ipAddress.fqdn]"
+    },
+    "ip": {
+      "type": "string",
+      "value": "[reference(parameters('containerGroupName')).ipAddress.ip]"
+    }
+  }
+}
